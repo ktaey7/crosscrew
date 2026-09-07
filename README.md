@@ -1,39 +1,87 @@
-# Crosscrew
+<div align="center">
 
-**Keep working with your preferred AI. Borrow another model's perspective when it matters.**
+![Crosscrew — Your workspace. More perspectives.](assets/hero.svg)
 
-Crosscrew delegates scoped tasks through the native Claude Code, Codex, Grok and
-Antigravity (`agy`) CLIs. Your current AI stays in charge: ask another model to
-challenge a design, review a plan, or verify an implementation, then continue the
-same review session with a follow-up brief.
+**An independent perspective, without leaving the AI you already use.**
 
-**Early alpha · macOS · Python 3.11+ · native CLI login required**
+[![Tests](https://github.com/ktaey7/crosscrew/actions/workflows/tests.yml/badge.svg)](https://github.com/ktaey7/crosscrew/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-73e8cf)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-a49bff)](docs/usage.md#install-from-source)
+[![Stage: alpha](https://img.shields.io/badge/stage-alpha-f3ba73)](https://github.com/ktaey7/crosscrew/releases)
 
-This is a small extraction of a personal working setup, not a universal agent
-platform. Claude ↔ Codex review and follow-up is the initial focus. Grok and agy
-adapters are included as experimental. Host background notifications, every
-host/provider combination, and clean-machine installation have not all been
-verified. Browser-only ChatGPT/Claude chats cannot run this local CLI.
+[Get started](#install-from-source) · [See it in action](#a-review-that-changed-the-plan) · [How it works](#how-it-works) · [한국어](README.ko.md)
 
-[한국어 안내](README.ko.md) · [Calling card](quick-contract.md) · [Architecture and limits](architecture.md)
+</div>
 
-## Crosscrew and Council
+## Keep your workflow. Add another point of view.
 
-- **Crosscrew** handles invocation, routing, job observation, results and sessions.
-- **[Council](https://github.com/ktaey7/multi-agent-council)** provides discussion
-  and adversarial review rules. It is optional and independently usable.
+You're working with your usual AI. The plan looks reasonable—but before building
+it, you want a different model to find what you've missed.
 
-A second opinion does not require a council. Crosscrew does not prescribe roles,
-round counts or consensus rules. Existing tools also offer multi-model delegation;
-our hypothesis is that a compact shared adapter can reduce setup and maintenance
-across the AI environments people already use. External demand and a comparative
-installation advantage remain unverified.
+> “Use Crosscrew to ask Claude to challenge this plan.
+> After we revise it, send it back to the same reviewer.”
+
+Crosscrew connects your current AI environment to other **native AI CLIs**.
+Your main AI keeps the conversation, evaluates the feedback, and carries on.
+The reviewer can keep its session for the next round.
+
+| When you want… | Ask Crosscrew to… |
+|---|---|
+| A second opinion on a design | Have another model challenge the assumptions and failure cases. |
+| A check before shipping | Get an independent review of the implementation and evidence. |
+| A better plan | Send the revised plan back to the same reviewer and check what remains. |
+
+Bring the CLIs you're already signed into. You don't need every provider,
+and you don't need a new dashboard.
+
+## A review that changed the plan
+
+In a hands-on check on **September 7, 2026**, Crosscrew was installed from its
+public release into a separate test directory. The host was Codex; the external
+reviewer was Claude, using its existing native login.
+
+| Step | What happened |
+|---|---|
+| **Review** | Claude rejected a sample CSV-import plan: partial writes and retries could create duplicate records. **HOLD.** |
+| **Revise** | The host added atomic writes, idempotency, validation and explicit failure tests. |
+| **Re-review** | The same Claude session recognized the fixes, identified remaining details, and gave the implementation plan a **PASS**. |
+
+Session IDs matched. The reviewer recalled a check word from its first response
+without being given it again. Both result files passed size and SHA-256 checks.
+A wait timed out and was resumed using the same job ID, without restarting the worker.
+
+This check also found a real bug: a broker-started job returned a failure exit code
+while already running. It was fixed in
+[v0.1.0-alpha.3](https://github.com/ktaey7/crosscrew/releases/tag/v0.1.0-alpha.3),
+with a regression test. **402 tests** passed locally and on the macOS Python
+3.11 / 3.13 [CI matrix](https://github.com/ktaey7/crosscrew/actions/runs/34098984601).
+This is evidence for one working review loop—not a claim that every host combination is verified.
+
+## How it works
+
+```mermaid
+flowchart LR
+    U[You] --> H[Your usual AI]
+    H -->|Scoped brief| X[Crosscrew]
+    X -->|Native CLI| R[Another AI]
+    R -->|Review + session| X
+    X -->|Verified result reference| H
+    H -->|Revised brief · same session| X
+```
+
+- **One place for the wiring.** Provider flags, routes and session handling live in the adapter, not in every host prompt.
+- **Work you can come back to.** Keep a job ID, wait in the background, and recover the result after reconnecting.
+- **Follow-up with context.** Start a fresh review, then resume that reviewer's session with your changes.
+- **Results you can check.** Read the result file referenced by path, size and hash. Your host still decides whether the answer holds up.
+
+A small supervisor, native CLI adapters and an optional loopback broker do the work.
+[Read the architecture →](architecture.md)
 
 ## Install from source
 
-Install and log in to the native CLIs you want to use, using each provider's own
-instructions. You only need the providers you will actually call. Crosscrew neither
-installs them nor copies credentials. Ensure `python3 --version` is **3.11 or newer**.
+**You'll need:** macOS, Python **3.11+**, and the native CLIs you want to use,
+already installed and logged in. Crosscrew uses their normal authentication;
+it does not copy credentials or ask you to extract tokens.
 
 ```bash
 git clone https://github.com/ktaey7/crosscrew.git "$HOME/.local/share/crosscrew"
@@ -42,151 +90,96 @@ python3 install.py --dry-run --host claude --host codex
 python3 install.py --host claude --host codex
 ```
 
-The installer creates a launcher at `~/.local/bin/crosscrew` and the explicitly
-selected, named Crosscrew entrypoints. It refuses to overwrite unrelated files.
-Make `~/.local/bin` available on your shell PATH if it is not already there.
-Alternatively run `python3 /absolute/path/to/crosscrew/crosscrew.py` directly.
-The installed entrypoints use the selected Python executable and absolute path.
-Keep the source checkout in place while installed.
-
-`--host claude` adds `~/.claude/commands/crosscrew.md`; `--host codex` adds
-`~/.codex/skills/crosscrew/SKILL.md`; experimental `--host grok` adds
-`~/.grok/skills/crosscrew/SKILL.md`. Select any subset, or omit all hosts for a CLI-only
-installation. No global instructions, hooks, MCPs, credentials or existing Council
-files are replaced. Host discovery after installation may require a new session.
-For agy, manually provide the calling card and `--host agy`; there is no automatic
-edit to `GEMINI.md` in this release.
+Choose the hosts you actually use. Add `~/.local/bin` to your shell's PATH if needed,
+then start a new host session if the entrypoint isn't visible.
 
 ```bash
 crosscrew doctor --providers claude codex
-crosscrew call codex --host claude --check
 ```
 
-Doctor checks availability and known API-auth overrides without calling a model.
-`checks_passed` does **not** mean authentication, billing or a real task was verified.
-A missing broker is reported separately because direct routes do not need one.
+The installer adds named Crosscrew entrypoints and refuses unrelated file conflicts.
+It does not replace your global AI instructions or start a service.
 
-## First review, then follow-up
-
-In a host with the entrypoint installed, try:
-
-> Use Crosscrew to ask Codex to challenge this plan. Keep the review session so we
-> can send a revised plan back to the same reviewer.
-
-The host should write a focused brief, start the job, retain its ID and wait for the
-result. The equivalent CLI flow is:
-
-```bash
-# Substitute absolute paths for your own project and briefs.
-crosscrew job start codex /absolute/path/review.md \
-  --host claude --target /absolute/path/project \
-  --profile review --mode fresh --run-id design-review
-crosscrew job wait JOB_ID_FROM_START
-
-# After evaluating the result and revising the plan:
-crosscrew job start codex /absolute/path/follow-up.md \
-  --host claude --target /absolute/path/project \
-  --profile review --mode resume --run-id design-review
-crosscrew job wait SECOND_JOB_ID
-```
-
-The actual host must be supplied; `--host shell` is for a real ordinary terminal,
-not a workaround for another host's sandbox. Briefs carry the necessary context;
-Crosscrew does not copy the entire host conversation. Results include session
-metadata when the provider supplies it. `wait` returns a result reference with
-path, size and SHA-256; the host reads and verifies that file. The file may be
-`result.pending.json` before collection. Waiting can time out without canceling
-the worker. Reconnect with the same job ID instead of starting a duplicate.
-
-See `crosscrew card` and `crosscrew job --help`. Work/research profiles exist but
-require the corresponding user scope; a successful worker response is not a
-substitute for host verification.
-
-## Optional broker for sandboxed hosts
-
-Some routes, including Codex → Claude, require a broker outside the host sandbox.
-The broker can start a native CLI with your account's permissions. It validates
-typed requests and authenticates a loopback connection, but does not add an OS
-sandbox to Claude. It is not a remote server or a multi-user security boundary.
-
-Start it manually in an ordinary terminal:
+**Using Codex to call Claude?** That route needs a broker outside the host sandbox.
+In an ordinary terminal, run:
 
 ```bash
 crosscrew broker serve
 ```
 
-Or explicitly install the macOS user service from that terminal:
+Leave that terminal running, then ask your host AI to use Crosscrew. A persistent
+macOS service is optional. [Full setup, routes and service instructions →](docs/usage.md)
+
+<details>
+<summary><strong>Prefer the command line? See the review / re-review flow.</strong></summary>
 
 ```bash
-crosscrew broker render     # inspect the exact LaunchAgent first
-crosscrew broker install
-crosscrew broker health
+crosscrew job start claude /absolute/path/review.md \
+  --host codex --target /absolute/path/project \
+  --profile review --mode fresh --run-id design-review
+crosscrew job wait JOB_ID_FROM_START
+
+# After reviewing the feedback and revising the plan:
+crosscrew job start claude /absolute/path/follow-up.md \
+  --host codex --target /absolute/path/project \
+  --profile review --mode resume --run-id design-review
+crosscrew job wait SECOND_JOB_ID
 ```
 
-Ordinary installation never enables this service. Crosscrew uses its own label,
-`io.github.ktaey7.crosscrew.broker`, and its own state directory. Loopback must be
-reachable from the host; Crosscrew does not change host network permissions.
-The service stores the installation-time PATH and Crosscrew configuration paths,
-not shell API tokens. Reinstall it explicitly when those paths change. Native CLI
-configuration and authentication still apply in the service process.
+Use the actual host and save the returned job IDs. A brief supplies the necessary
+context; the whole host conversation isn't copied automatically. A wait timeout
+doesn't cancel the worker. [Compact calling card →](quick-contract.md)
 
-## Authentication and billing
+</details>
 
-Crosscrew is intended for people who already use supported native CLIs through
-their provider accounts. It invokes those CLIs; it does not exchange OAuth tokens
-for API access, proxy a subscription, or silently fall back to an API.
+## Where it works today
 
-**Native CLI execution alone does not prove subscription billing.** CLI settings,
-saved authentication, environment variables, plan limits and extra usage affect
-billing. This alpha blocks known API/cloud environment overrides, Claude
-`apiKeyHelper`/settings overrides and selected Codex custom-provider settings.
-It never prints their values. This is a partial check, not a complete subscription
-billing detector. Verify the native CLI's active authentication and usage settings
-before your first real call. The guard deliberately blocks known API variables
-even if they appear to belong to another provider; use a clean environment.
+| Surface / provider | Current scope |
+|---|---|
+| **Claude Code + Codex** | Initial focus. Codex → Claude review and same-session follow-up verified with real calls. |
+| **Grok** | Adapter and host entrypoint included; experimental. |
+| **Antigravity (`agy`)** | Experimental adapter; no stable fresh-session flow or automatic host installation. |
+| **Browser-only chats** | Cannot run this local CLI directly. |
 
-Claude's noninteractive authentication precedence is documented in its
-[official authentication guide](https://code.claude.com/docs/en/authentication#authentication-precedence).
-No fixed prices, unlimited use or compatibility with future CLI versions are promised.
+**Alpha boundaries:** background notifications depend on the host. Claude's review
+profile is a prompt guard, not an OS write barrier. Existing native settings and
+hooks can apply. The broker runs with your account's privileges outside the host sandbox.
+
+Existing CLI login also does not guarantee subscription-only billing: native
+settings and extra usage still matter. Crosscrew blocks known API-auth overrides
+but cannot fully verify billing. [Authentication details](docs/usage.md#authentication-and-billing)
+· [Security](SECURITY.md)
+
+## Crosscrew + Council
+
+**Crosscrew gets another AI into the conversation.
+[Council](https://github.com/ktaey7/multi-agent-council) defines how a structured debate is conducted.**
+
+Use Crosscrew on its own for a second opinion. Use Council's methodology when you
+want independent positions, anonymized criticism and explicit treatment of dissent.
+They are separate projects; Council's existing public runner is not a bundled
+Crosscrew integration.
 
 ## Update and remove
 
-Do not update while jobs are running. Use `crosscrew job list --running`, finish or
-explicitly cancel those jobs, then update this source checkout:
+Finish running jobs before updating. The source checkout, selected entrypoints and
+optional broker each have an explicit update/removal path. Runtime state is kept
+outside the checkout and retained on uninstall.
 
-```bash
-git pull --ff-only
-python3 install.py --host claude --host codex  # refresh only the hosts you installed
-crosscrew broker restart                    # only if you installed the service
-crosscrew doctor --providers claude codex
-```
+[Update, rollback considerations and removal →](docs/usage.md#update-and-remove)
 
-For a tagged version, inspect release notes and check out its tag instead. This
-alpha has no automatic updater or state migrations. The broker rejects stale
-contracts; restart it after updates. Keep a private backup of runtime state before
-changing versions. A code rollback does not roll back provider sessions.
+## Help shape the next version
 
-To remove your selected entrypoints and launcher:
+Try **one real review and one follow-up**. Tell us where installation got in the
+way, what your host failed to notice, or whether the second perspective changed
+your decision. That feedback is more useful than adding another layer of orchestration.
 
-```bash
-crosscrew broker uninstall                  # only if you installed the service
-python3 install.py --uninstall --host claude --host codex
-```
+[Report an issue](https://github.com/ktaey7/crosscrew/issues) · [Contribute](CONTRIBUTING.md)
+· [Releases](https://github.com/ktaey7/crosscrew/releases)
 
-State lives at `~/.local/state/crosscrew` by default and is retained on uninstall.
-It contains briefs, outputs, session identifiers and broker credentials; keep it
-private and out of Git. `CROSSCREW_STATE_DIR` overrides it. Advanced users can
-supply a complete `CROSSCREW_BACKENDS_CONFIG` JSON file; use the same absolute
-configuration path for the host and broker. No `MULTIAI_*` variables or state from
-the original personal setup are reused.
+Crosscrew grew out of a personal multi-AI workflow. Multi-model delegation isn't
+unique to this project; we're testing whether a compact shared adapter makes it
+easier to use across the environments people already prefer.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for tests and adapter requirements. Useful
-first feedback includes your host, provider CLI version, installation obstacle,
-and a sanitized description of one review/follow-up. Do not upload raw state,
-credentials or private project briefs. [Security notes](SECURITY.md).
-
-MIT licensed. Derived in part from
-[netwaif/multi-agent-starter](https://github.com/netwaif/multi-agent-starter);
-see [NOTICE](NOTICE) for provenance. Crosscrew is not affiliated with the providers.
+MIT licensed. Built in part on [netwaif/multi-agent-starter](https://github.com/netwaif/multi-agent-starter).
+[Attribution](NOTICE). Not affiliated with the AI providers.

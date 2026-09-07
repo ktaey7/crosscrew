@@ -1,0 +1,13 @@
+Crosscrew
+Copyright (c) 2026 ktaey7 and contributors
+
+Derived in part from netwaif/multi-agent-starter, MIT licensed:
+https://github.com/netwaif/multi-agent-starter
+Reference: v3.3.0, commit 01ed7232e53ffa9bc844508ea449d09b586a2c8b
+Copyright (c) 2026 netwaif
+
+The initial public extraction preserves the supervisor/adapter/broker architecture
+from the maintainer's personal delegation setup. Personal Git history, runtime
+state, conversations, global host configuration and Council entrypoints are not
+included. Council is a separate optional project:
+https://github.com/ktaey7/multi-agent-council

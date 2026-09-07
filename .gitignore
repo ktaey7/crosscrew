@@ -1,0 +1,11 @@
+.state/
+.briefs/
+runs/
+__pycache__/
+*.py[cod]
+*.tmp
+.venv/
+dist/
+*.egg-info/
+.DS_Store
+.sandbox-test-*/

@@ -1,0 +1,265 @@
+{
+  "schema_version": "2.1",
+  "based_on": {
+    "repository": "https://github.com/netwaif/multi-agent-starter",
+    "release": "v3.3.0",
+    "commit": "01ed7232e53ffa9bc844508ea449d09b586a2c8b"
+  },
+  "defaults": {
+    "timeout_seconds": 0,
+    "check_after_seconds": 600,
+    "resume_max_age_seconds": 604800,
+    "state_dir": "~/.local/state/crosscrew",
+    "max_output_bytes": 1048576,
+    "max_stderr_bytes": 32768,
+    "broker_call_timeout_seconds": 3600
+  },
+  "profiles": {
+    "review": "Read-only analysis, verification, and council debate.",
+    "work": "Target-scoped implementation, editing, and verification.",
+    "research": "Read-only web and knowledge research.",
+    "media": "Image or video generation with artifact verification. Provider capabilities are declared per provider in media_capabilities."
+  },
+  "hosts": {
+    "claude": "Claude Code session acting as orchestrator.",
+    "codex": "Codex session acting as orchestrator; sandboxed.",
+    "grok": "Grok CLI session acting as orchestrator; sandboxed.",
+    "agy": "Antigravity/Gemini session acting as orchestrator.",
+    "shell": "Plain shell, used for diagnostics and acceptance tests."
+  },
+  "routes": {
+    "direct": "Host spawns the provider itself.",
+    "broker": "Host cannot spawn the provider; the loopback escalation broker runs it outside the host sandbox. Falls back to needs_host_escalation when the broker is unreachable.",
+    "requires_host_escalation": "No automatic escalation. The user must re-run the same command outside the host sandbox with --host-escalated.",
+    "in_process": "Self-delegation. The host answers in-process instead of spawning another copy of itself.",
+    "companion_preferred": "A host-native companion or plugin is the primary path; the CLI adapter is the fallback."
+  },
+  "providers": {
+    "claude": {
+      "command": "claude",
+      "model_sources": [
+        {
+          "kind": "env",
+          "name": "ANTHROPIC_MODEL"
+        },
+        {
+          "kind": "file",
+          "path": "~/.claude/settings.local.json",
+          "key": "model"
+        },
+        {
+          "kind": "file",
+          "path": "~/.claude/settings.json",
+          "key": "model"
+        }
+      ],
+      "modes": [
+        "oneshot",
+        "fresh",
+        "resume"
+      ],
+      "profiles": [
+        "review",
+        "work",
+        "research"
+      ],
+      "input_transport": "stdin",
+      "write_policies": {
+        "review": "prompt_guarded_read_only",
+        "work": "prompt_guarded_target_write",
+        "research": "prompt_guarded_read_only"
+      },
+      "notes": "Auto mode with a profile-specific system guard. Persistent sessions use an explicit UUID. No model is pinned by default; the envelope reports account_default_unpinned rather than inventing a name."
+    },
+    "codex": {
+      "command": "codex",
+      "model_sources": [
+        {
+          "kind": "env",
+          "name": "CODEX_MODEL"
+        },
+        {
+          "kind": "file",
+          "path": "~/.codex/config.toml",
+          "key": "model"
+        }
+      ],
+      "modes": [
+        "oneshot",
+        "fresh",
+        "resume"
+      ],
+      "profiles": [
+        "review",
+        "work",
+        "research",
+        "media"
+      ],
+      "input_transport": "stdin",
+      "write_policies": {
+        "review": "sandboxed_read_only",
+        "work": "sandboxed_target_write",
+        "research": "sandboxed_read_only",
+        "media": "imagegen_session_artifacts_only"
+      },
+      "reasoning_efforts": {
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "config_key": "model_reasoning_effort",
+        "observed_at": "2026-09-07",
+        "notes": "Adapter allowlist; actual support depends on the selected model. Omit effort to retain native CLI defaults."
+      },
+      "media_capabilities": {
+        "kinds": [
+          "image"
+        ],
+        "artifact_source": "codex_generated_images",
+        "supports_aspect_ratio": true,
+        "supports_duration": false,
+        "tool": "codex built-in image_gen via the imagegen system skill",
+        "notes": "Verified 2026-07-25: image_gen works under --sandbox read-only and writes to ~/.codex/generated_images/<thread-id>/. Requires mode fresh because the thread id is how the artifact directory is located. Codex has no video generation."
+      },
+      "notes": "Read-only or workspace-write sandbox selected by profile. Fresh session IDs are parsed from JSONL."
+    },
+    "grok": {
+      "command": "grok",
+      "model_sources": [
+        {
+          "kind": "file",
+          "path": "~/.grok/config.toml",
+          "key": "models.default"
+        }
+      ],
+      "modes": [
+        "oneshot",
+        "fresh",
+        "resume"
+      ],
+      "profiles": [
+        "review",
+        "work",
+        "research",
+        "media"
+      ],
+      "input_transport": "path",
+      "write_policies": {
+        "review": "sandboxed_read_only",
+        "work": "sandboxed_target_write",
+        "research": "sandboxed_read_only",
+        "media": "imagine_session_artifacts_only"
+      },
+      "media_capabilities": {
+        "kinds": [
+          "image",
+          "video"
+        ],
+        "artifact_source": "grok_session",
+        "supports_aspect_ratio": true,
+        "supports_duration": true,
+        "durations": [
+          6,
+          10
+        ],
+        "tool": "Grok Build Imagine (image_gen, image_to_video) on the logged-in consumer subscription",
+        "notes": "Never uses xAI API credentials. Video output on a ZDR team requires a private upload target; the adapter refuses with zdr_output_required instead of retrying."
+      },
+      "notes": "GROK_SANDBOX is read-only for review/research/media and workspace for work. Media always uses a fresh session, restricts tools to Imagine, scrubs API-key environment variables, and verifies copied artifacts. Grok nests its own sandbox, so sandboxed hosts route through the broker."
+    },
+    "agy": {
+      "command": "agy",
+      "model_sources": [
+        {
+          "kind": "file",
+          "path": "~/.gemini/settings.json",
+          "key": "model.name"
+        }
+      ],
+      "modes": [
+        "oneshot",
+        "resume"
+      ],
+      "profiles": [
+        "review",
+        "work",
+        "research"
+      ],
+      "input_transport": "content",
+      "write_policies": {
+        "review": "os_sandbox_target_read_only",
+        "work": "os_sandbox_project_grant_target_write",
+        "research": "os_sandbox_target_read_only"
+      },
+      "os_sandbox": {
+        "enabled": true,
+        "profiles": [
+          "review",
+          "work",
+          "research"
+        ],
+        "state_write_paths": [
+          "~/.gemini",
+          "~/.antigravity",
+          "~/Library/Caches",
+          "~/Library/Application Support/Antigravity",
+          "~/Library/Logs"
+        ],
+        "reason": "A 2026-07-25 live probe showed agy's --mode plan --sandbox does not stop its file-writing tools: it created, overwrote, and wrote outside the target. Write confinement is enforced by seatbelt instead of being assumed."
+      },
+      "notes": "Review/research inspect the target under a seatbelt profile that denies every write outside agy's own state and temp space. Work additionally allows writes inside the target and denies everything else, on top of the temporary project-scoped write_file(target) grant and accept-edits. Never receives --dangerously-skip-permissions."
+    }
+  },
+  "host_matrix": {
+    "claude": {
+      "claude": "in_process",
+      "codex": "direct",
+      "grok": "direct",
+      "agy": "direct"
+    },
+    "codex": {
+      "claude": "broker",
+      "codex": "in_process",
+      "grok": "broker",
+      "agy": "direct"
+    },
+    "grok": {
+      "claude": "broker",
+      "codex": "broker",
+      "grok": "in_process",
+      "agy": "broker"
+    },
+    "agy": {
+      "claude": "broker",
+      "codex": "broker",
+      "grok": "broker",
+      "agy": "in_process"
+    },
+    "shell": {
+      "claude": "direct",
+      "codex": "direct",
+      "grok": "direct",
+      "agy": "direct"
+    }
+  },
+  "profile_host_matrix": {
+    "codex": {
+      "agy": {
+        "work": "broker"
+      }
+    }
+  },
+  "mode_host_matrix": {},
+  "role_policy": {
+    "rules": []
+  },
+  "capability_assumptions": {
+    "items": []
+  },
+  "external_assumptions": {
+    "items": []
+  }
+}

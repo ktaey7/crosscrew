@@ -12,7 +12,7 @@ if sys.version_info < (3, 11):
     raise SystemExit('Crosscrew requires Python 3.11+; rerun with a supported interpreter.')
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '0.1.0a2'
+VERSION = '0.1.0a3'
 
 
 def main(argv=None):

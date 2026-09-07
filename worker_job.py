@@ -635,7 +635,9 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
             if brokered is not None:
                 print_json(brokered)
                 status = brokered.get("status")
-                if status in {"started", "ok"}:
+                # start_job reports running after a successful spawn; this
+                # acknowledges startup, not successful worker completion.
+                if status in {"running", "started", "ok"}:
                     return 0
                 return int(brokered.get("exit_code") or 1)
         print_json(

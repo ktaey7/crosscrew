@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0a3 — 2026-09-07
+
+- Return exit code 0 when the broker successfully starts a job and reports `running`, including fresh and resumed review sessions. Worker completion still requires `job wait`.
+- Add a regression test that runs the public CLI through a temporary broker and checks both startup exit codes, completion and session continuity using a fake native CLI.
+
 ## 0.1.0a2 — 2026-09-07
 
 - Bind the loopback broker without reverse DNS, removing an unnecessary startup dependency on the host resolver.

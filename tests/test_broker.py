@@ -273,6 +273,31 @@ print(json.dumps({"type":"turn.completed"}),flush=True)
         self.assertEqual(result['stdout'], 'BROKER_CODEX_OK')
         self.assertFalse((directory/'result.json').exists())
 
+    def test_job_cli_broker_start_and_resume_exit_successfully(self):
+        session_ids = []
+        for mode in ("fresh", "resume"):
+            with self.subTest(mode=mode):
+                started = subprocess.run(
+                    [sys.executable, str(ROOT / "crosscrew.py"), "job", "start",
+                     "claude", str(self.brief), "--host", "codex",
+                     "--target", str(self.base), "--profile", "review",
+                     "--mode", mode, "--run-id", "broker-cli-exit-regression"],
+                    env=self.env, capture_output=True, text=True, timeout=30,
+                )
+                payload = json.loads(started.stdout)
+                # Finish the fake worker even when the exit-code assertion fails.
+                ended = subprocess.run(
+                    [sys.executable, str(ROOT / "crosscrew.py"), "job", "wait",
+                     payload["job_id"], "--timeout", "10", "--interval", ".05"],
+                    env=self.env, capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(ended.returncode, 0, ended.stdout + ended.stderr)
+                self.assertEqual(payload["status"], "running")
+                self.assertEqual(payload["transport"], "broker")
+                session_ids.append(payload["session_id"])
+                self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(session_ids[0], session_ids[1])
+
     def test_sandboxed_host_reaches_provider_through_broker_automatically(self):
         completed = subprocess.run(
             [

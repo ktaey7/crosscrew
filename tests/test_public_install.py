@@ -39,7 +39,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.run_install('--host','claude','--host','codex').returncode,0)
         launcher=self.bin/'crosscrew'
         run=subprocess.run([str(launcher),'--version'],env=self.env,text=True,capture_output=True)
-        self.assertEqual((run.returncode,run.stdout.strip()),(0,'0.1.0a2'))
+        self.assertEqual((run.returncode,run.stdout.strip()),(0,'0.1.0a3'))
         self.assertTrue((self.home/'.codex/skills/crosscrew/SKILL.md').exists())
         self.assertFalse((self.home/'.grok').exists())
         state=self.home/'.local/state/crosscrew/jobs';state.mkdir(parents=True)

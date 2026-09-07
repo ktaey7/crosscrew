@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0a2 — 2026-09-07
+
+- Bind the loopback broker without reverse DNS, removing an unnecessary startup dependency on the host resolver.
+- Wait for the fake media worker before removing its test state.
+- Use temporary image storage in the missing-session test instead of the maintainer's installed Codex directory.
+
+Validation: 401 tests passed locally on macOS/Python 3.14.6.
+
 ## 0.1.0a1 — 2026-09-07
 
 First public alpha extracted from a working personal delegation setup.

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -92,9 +93,7 @@ class ArtifactSourceTests(unittest.TestCase):
     def test_missing_thread_directory_is_reported_as_session_missing(self):
         # Distinct from a layout change: the storage root exists, this session's
         # directory does not, so generation simply did not produce anything.
-        if not media_artifacts.CODEX_IMAGES_ROOT.is_dir():
-            self.skipTest("codex image root absent on this host")
-        with self.assertRaises(media_artifacts.ArtifactError) as ctx:
+        with patch.object(media_artifacts, "CODEX_IMAGES_ROOT", self.base), self.assertRaises(media_artifacts.ArtifactError) as ctx:
             media_artifacts.collect_codex_artifacts(
                 session_id="00000000-0000-0000-0000-000000000000",
                 output_dir=self.base,
@@ -263,6 +262,14 @@ class DispatcherMediaGateTests(unittest.TestCase):
         completed, payload = self.call(WORKER_JOB, "codex", "--media-kind", "image")
         self.assertNotEqual(payload.get("status"), "invalid_media_input")
         self.assertNotEqual(payload.get("status"), "unsupported_media_kind")
+        # The gate admits a real asynchronous (fake-CLI) job. Finish it before
+        # deleting its state; otherwise teardown races worker output writes.
+        self.assertIn("job_id", payload)
+        waited = subprocess.run(
+            [sys.executable, str(WORKER_JOB), "wait", payload["job_id"], "--timeout", "15"],
+            env=self.env, text=True, capture_output=True, timeout=20,
+        )
+        self.assertIn(waited.returncode, (0, 1), waited.stdout + waited.stderr)
 
     def test_dispatcher_reports_where_media_is_available(self):
         completed, payload = self.call(CALL_WORKER, "agy", "--media-kind", "image")

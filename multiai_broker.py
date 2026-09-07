@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 
 import broker_endpoint as endpoint
 import broker_protocol as protocol
@@ -260,17 +261,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, result)
 
 
+class LoopbackServer(ThreadingHTTPServer):
+    daemon_threads = True
+    address_family = socket.AF_INET
+
+    def server_bind(self):
+        # HTTPServer normally performs reverse DNS here. This loopback-only
+        # listener has a fixed name and must not depend on a host DNS resolver.
+        TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+
 def serve(state_dir: Path, port: int, call_timeout: float) -> int:
     token = endpoint.read_token(state_dir) or endpoint.issue_token(state_dir)
     state = BrokerState(state_dir, token, call_timeout)
     Handler.broker_state = state
 
-    class Server(ThreadingHTTPServer):
-        daemon_threads = True
-        address_family = socket.AF_INET
-
     try:
-        httpd = Server(("127.0.0.1", port), Handler)
+        httpd = LoopbackServer(("127.0.0.1", port), Handler)
     except OSError as exc:
         print(json.dumps({"status": "broker_bind_failed", "error": str(exc)}), file=sys.stderr)
         return 73

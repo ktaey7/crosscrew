@@ -39,7 +39,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.run_install('--host','claude','--host','codex').returncode,0)
         launcher=self.bin/'crosscrew'
         run=subprocess.run([str(launcher),'--version'],env=self.env,text=True,capture_output=True)
-        self.assertEqual((run.returncode,run.stdout.strip()),(0,'0.1.0a1'))
+        self.assertEqual((run.returncode,run.stdout.strip()),(0,'0.1.0a2'))
         self.assertTrue((self.home/'.codex/skills/crosscrew/SKILL.md').exists())
         self.assertFalse((self.home/'.grok').exists())
         state=self.home/'.local/state/crosscrew/jobs';state.mkdir(parents=True)
@@ -134,3 +134,12 @@ class PublicContractTests(unittest.TestCase):
         with patch.dict(os.environ,{'HOME':'/tmp/crosscrew-home','MULTIAI_STATE_DIR':'/private/personal-state'},clear=True):
             state=projection.resolve_state_dir(config,ROOT)
         self.assertEqual(str(state),'/tmp/crosscrew-home/.local/state/crosscrew')
+
+
+class BrokerStartupTests(unittest.TestCase):
+    def test_loopback_bind_does_not_consult_dns(self):
+        from multiai_broker import LoopbackServer, Handler
+        with patch('socket.getfqdn', side_effect=AssertionError('unexpected DNS lookup')):
+            with LoopbackServer(('127.0.0.1', 0), Handler) as server:
+                self.assertEqual(server.server_name, '127.0.0.1')
+                self.assertGreater(server.server_port, 0)

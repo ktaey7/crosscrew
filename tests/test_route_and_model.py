@@ -46,9 +46,9 @@ class RouteResolutionTests(unittest.TestCase):
         self.assertEqual(self.route("agy", "codex"), "broker")
         self.assertEqual(self.route("agy", "grok"), "broker")
 
-    def test_claude_host_reaches_grok_and_agy_directly(self):
-        self.assertEqual(self.route("claude", "grok"), "direct")
-        self.assertEqual(self.route("claude", "agy"), "direct")
+    def test_claude_host_reaches_grok_and_agy_through_broker(self):
+        self.assertEqual(self.route("claude", "grok"), "broker")
+        self.assertEqual(self.route("claude", "agy"), "broker")
 
     def test_claude_host_reaches_codex_through_the_adapter_not_the_companion(self):
         """Both primary hosts must delegate under one contract.
@@ -59,16 +59,15 @@ class RouteResolutionTests(unittest.TestCase):
         the two hosts the user actually drives. The plugin stays installed for
         its own commands; it is no longer the routed default.
         """
-        self.assertEqual(self.route("claude", "codex"), "direct")
+        self.assertEqual(self.route("claude", "codex"), "broker")
 
     def test_self_route_is_in_process_for_every_agent_host(self):
         for agent in ("claude", "codex", "grok", "agy"):
             self.assertEqual(self.route(agent, agent), "in_process")
 
-    def test_profile_matrix_tightens_a_direct_base_route(self):
-        # codex->agy is direct for review, but work needs a write grant the
-        # Codex sandbox cannot create, so the stricter profile entry must win.
-        self.assertEqual(self.route("codex", "agy", "review"), "direct")
+    def test_codex_agy_uses_broker_for_review_and_work(self):
+        # Native seatbelt cannot initialize inside the host sandbox.
+        self.assertEqual(self.route("codex", "agy", "review"), "broker")
         self.assertEqual(self.route("codex", "agy", "work"), "broker")
 
     def test_strictest_route_wins_regardless_of_matrix_order(self):

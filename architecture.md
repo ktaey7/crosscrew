@@ -4,8 +4,8 @@ Crosscrew preserves three existing components:
 
 1. `worker_job.py` supervises persistent jobs, observation and recovery.
 2. `call_worker.py` validates requests and builds native provider invocations.
-3. `multiai_broker.py` accepts authenticated, typed loopback requests where a host
-   cannot launch a provider directly. It rejects arbitrary command arguments.
+3. `multiai_broker.py` accepts authenticated, typed loopback requests from all
+   normal AI hosts. It rejects arbitrary command arguments.
 
 `crosscrew.py` is the small user-facing dispatcher. `backends.json` describes
 providers, profiles, routes and selected capability constraints. The optional
@@ -19,7 +19,7 @@ No AI chooses a transport by guessing an executable command.
 | Claude Code | Prompt guard; native auto permission mode | fresh/resume | Initial review focus |
 | Codex | Native read-only sandbox | fresh/resume | Initial review focus |
 | Grok | Native sandbox, Claude compat surfaces disabled in worker environment | fresh/resume | Experimental |
-| agy | macOS Seatbelt write restrictions plus native mode | No stable fresh session ID | Experimental |
+| agy | macOS Seatbelt write restrictions plus native mode | Native JSON conversation ID; fresh/resume | Experimental |
 
 A read-only profile is a requested task scope, not a universal guarantee that no
 file can change. Claude hooks and native configuration remain active. Sandboxes
@@ -43,16 +43,17 @@ Installing a Grok host skill does not alter Grok's global compat settings.
 
 | Host → provider | Claude | Codex | Grok | agy |
 |---|---|---|---|---|
-| Claude | self | direct | direct | direct |
-| Codex | broker | self | broker | direct* |
+| Claude | self | broker | broker | broker |
+| Codex | broker | self | broker | broker |
 | Grok | broker | broker | self | broker |
 | agy | broker | broker | broker | self |
 | ordinary shell | direct | direct | direct | direct |
 
-*Codex → agy work uses the broker. These are configured routes, not a claim that
+The ordinary-shell route is for diagnostics. These are configured routes, not a claim that
 all combinations have completed real tasks in all host versions. A host without
 loopback access cannot use its broker route. Failure is explicit; do not claim a
-different host to work around it.
+different host to work around it. Recursive broker children cannot escalate again.
+No automatic direct fallback or service restart is performed.
 
 ## State, sessions and observation
 
@@ -63,7 +64,8 @@ broker token, prompts, outputs and session metadata locally.
 
 `job start` returns a job ID and spawns a supervised process. Provider session IDs
 are recorded when available. A follow-up uses the same run ID, provider and profile
-with `--mode resume`; use the same target and include the changed context in the
+with `--mode resume`; implicit resume validates the stored target/profile/age
+(older records lack target checks; explicit session-ID imports bypass registry checks). Use the same target and include the changed context in the
 new brief. Resume depends on native provider session retention. State files cannot
 recreate a provider session after it expires. Concurrent requests must not reuse
 a session as if they were independent reviewers.
@@ -71,7 +73,9 @@ a session as if they were independent reviewers.
 `wait` observes without mutating state. The result reference reports path, byte
 size and SHA-256, including pending results. A terminal status without a result is
 possible. `status` and `collect` can reconcile state and have write effects.
-Wait timeouts and waiter termination do not cancel the worker. Cancellation is an
+`--summary` returns an allowlisted, UTF-8-bounded answer (8 KiB), session and usage
+from the same hashed bytes. `wait-many` observes up to 16 jobs in one process with
+one terminal/timeout JSON response. Wait timeouts and waiter termination do not cancel the worker. Cancellation is an
 explicit `job cancel`. Progress events only retain allowlisted metadata; brief,
 stdout and stderr files still contain task content and must remain private.
 
@@ -79,6 +83,36 @@ The broker contract hash covers its loaded modules and active registry config.
 After updating code/config, explicitly restart an installed service. A stale
 broker fails closed. Changing native CLI versions can still break invocation;
 a matching hash does not verify provider compatibility.
+
+## Work runtime boundaries
+
+Claude work remains prompt-guarded; Codex work uses its native workspace-write
+sandbox. Grok work requires a separately installed `crosscrew-target-v1` profile
+extending strict, with opt-in, specific read-only runtime directories. No personal
+Python path is shipped. Before work, a recognized expiring Grok login may be
+refreshed using its native model-list command; credentials are never exported.
+
+agy work creates a temporary target project. Exact command grants, when requested,
+are escaped/anchored and require outer OS write confinement. Setup failure,
+completion and cancellation release them; orphan cleanup is limited to the
+`crosscrew-work-*` namespace. Host-native approval of a headless start/wait command
+is separate from worker grants and is never installed globally.
+
+Seatbelt permits provider state and system temp writes in addition to a work
+target. A review target inside those exceptions cannot be protected; the envelope
+reports that warning. On unsupported OSes the wrapper reports weaker prompt guards;
+exact agy command grants fail closed. This is write confinement, not read/network
+isolation. See [work-runtime.md](docs/work-runtime.md).
+
+## Usage and acceptance
+
+Provider-reported usage is allowlisted separately from answer text. Claude reports
+per invocation; Codex/Grok terminal counters are treated as session cumulative;
+Gemini scope remains unverified and is excluded from sums. Missing counts remain
+null. The read-only summary consumes explicit schema 2.0 envelopes; a separate
+manifest can compare independently accepted Codex-host arms. Neither tool measures
+account quota or automatically captures host preparation/review. See
+[usage-accounting.md](docs/usage-accounting.md).
 
 ## Additional inherited capabilities
 

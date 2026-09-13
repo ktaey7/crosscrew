@@ -24,6 +24,7 @@ from grok_media_privacy import video_privacy_preflight
 import media_registry
 import effort_registry
 import mission_log
+import work_commands
 import projection
 import job_wait
 import progress
@@ -50,6 +51,25 @@ def now_iso() -> str:
 
 def print_json(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+
+
+def start_shell_exit(payload: dict) -> int:
+    """Map a start envelope to a process exit code.
+
+    Acceptance (`running` with a job_id, or legacy `started`/`ok`) is 0. That is
+    not worker completion. Start rejections and spawn failures keep their
+    envelope exit_code. A `running` envelope without a job_id is unconfirmed.
+    """
+    status = payload.get("status")
+    job_id = payload.get("job_id")
+    if status == "running" and isinstance(job_id, str) and job_id:
+        return 0
+    if status in {"started", "ok"}:
+        return 0
+    exit_code = payload.get("exit_code")
+    if isinstance(exit_code, int) and exit_code != 0:
+        return exit_code
+    return 1
 
 
 def load_config() -> dict:
@@ -460,6 +480,8 @@ def broker_start_payload(args: argparse.Namespace, brief: Path, target: Path) ->
         payload["model"] = args.model
     if args.effort:
         payload["effort"] = args.effort
+    if getattr(args, "allow_command", None):
+        payload["allow_commands"] = args.allow_command
     if args.media_kind:
         payload["media_kind"] = args.media_kind
     if args.output_dir:
@@ -484,6 +506,11 @@ def broker_start_payload(args: argparse.Namespace, brief: Path, target: Path) ->
 
 
 def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
+    try:
+        args.allow_command = work_commands.validate(getattr(args, "allow_command", []), args.provider, args.profile)
+    except ValueError as error:
+        print_json({"status": "invalid_command_grant", "exit_code": 64, "error": str(error)})
+        return 64
     # Validated before anything is created: an invalid label must not leave an
     # orphan job directory behind, and must not reach the broker either.
     if args.mission is not None and not mission_log.valid_mission_id(args.mission):
@@ -627,19 +654,14 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
         if route == "broker":
             try:
                 brokered = broker_client.request(
-                    state_dir(config), broker_start_payload(args, brief, target)
+                    root, broker_start_payload(args, brief, target)
                 )
             except broker_client.BrokerUnavailable as exc:
                 brokered = None
                 broker_error = str(exc)
             if brokered is not None:
                 print_json(brokered)
-                status = brokered.get("status")
-                # start_job reports running after a successful spawn; this
-                # acknowledges startup, not successful worker completion.
-                if status in {"running", "started", "ok"}:
-                    return 0
-                return int(brokered.get("exit_code") or 1)
+                return start_shell_exit(brokered)
         print_json(
             {
                 "schema_version": "1.0",
@@ -661,6 +683,7 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
         )
         return 77
 
+    root = state_dir(config)
     job_id = safe_job_id(
         args.job_id or f"{args.provider}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     )
@@ -711,6 +734,8 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
         command += ["--model", args.model]
     if args.effort:
         command += ["--effort", args.effort]
+    for allowed_command in args.allow_command:
+        command += ["--allow-command", allowed_command]
     if args.media_kind:
         command += ["--media-kind", args.media_kind]
     if args.output_dir:
@@ -725,6 +750,8 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
         command += ["--rehydrate-file", str(args.rehydrate_file.expanduser().resolve())]
     if args.host_escalated:
         command.append("--host-escalated")
+    if args.allow_self_delegation:
+        command.append("--allow-self-delegation")
 
     check_after = (
         args.check_after if args.check_after is not None else float(config["defaults"].get("check_after_seconds", 600))
@@ -824,36 +851,36 @@ def start_job(args: argparse.Namespace, config: dict, root: Path) -> int:
             "provider": args.provider, "host": args.host, "profile": args.profile,
             "role": args.role, "round": args.round, "target": str(target)})
 
-    print_json(
-        {
-            "schema_version": "1.0",
-            "status": "running",
-            "job_id": job_id,
-            "provider": args.provider,
-            "run_id": run_id,
-            "profile": args.profile,
-            "target": str(target),
-            "mission_id": args.mission,
-            "role": args.role,
-            "round": args.round,
-            "event_log_degraded": bool(args.mission) and not event_logged,
-            "model": args.model,
-            "reasoning_effort": args.effort,
-            "media_kind": args.media_kind,
-            "output_dir": str(args.output_dir.expanduser().resolve()) if args.output_dir else None,
-            "session_id": session_id,
-            "pid": process.pid,
-            "pgid": meta["pgid"],
-            "identity_verified": identity_status(meta) == "verified",
-            "check_after_seconds": check_after,
-            "hard_timeout_seconds": None,
-            "auto_canceled": False,
-            "status_command": f"{ROOT / 'worker_job.sh'} status {job_id}",
-            "collect_command": f"{ROOT / 'worker_job.sh'} collect {job_id}",
-            "cancel_command": f"{ROOT / 'worker_job.sh'} cancel {job_id}",
-        }
-    )
-    return 0
+    accepted = {
+        "schema_version": "1.0",
+        "status": "running",
+        "exit_code": 0,
+        "job_id": job_id,
+        "provider": args.provider,
+        "run_id": run_id,
+        "profile": args.profile,
+        "target": str(target),
+        "mission_id": args.mission,
+        "role": args.role,
+        "round": args.round,
+        "event_log_degraded": bool(args.mission) and not event_logged,
+        "model": args.model,
+        "reasoning_effort": args.effort,
+        "media_kind": args.media_kind,
+        "output_dir": str(args.output_dir.expanduser().resolve()) if args.output_dir else None,
+        "session_id": session_id,
+        "pid": process.pid,
+        "pgid": meta["pgid"],
+        "identity_verified": identity_status(meta) == "verified",
+        "check_after_seconds": check_after,
+        "hard_timeout_seconds": None,
+        "auto_canceled": False,
+        "status_command": f"{ROOT / 'worker_job.sh'} status {job_id}",
+        "collect_command": f"{ROOT / 'worker_job.sh'} collect {job_id}",
+        "cancel_command": f"{ROOT / 'worker_job.sh'} cancel {job_id}",
+    }
+    print_json(accepted)
+    return start_shell_exit(accepted)
 
 
 def cancel_job(root: Path, job_id: str) -> int:
@@ -1101,6 +1128,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--mode", choices=("oneshot", "fresh", "resume"), default="oneshot")
     start.add_argument("--profile", choices=("review", "work", "research", "media"), default="review")
     start.add_argument("--model")
+    start.add_argument("--allow-command", action="append", default=[],
+                       help="exact AGY work command; repeatable, no inferred or wildcard grants")
     # Validated by the dispatcher against the registry, not by argparse here.
     start.add_argument("--effort")
     # Bounds live in mission_log, checked in start_job, so the broker and the
@@ -1140,6 +1169,12 @@ def parser() -> argparse.ArgumentParser:
     waiting.add_argument("job_id")
     waiting.add_argument("--interval", type=float, default=2)
     waiting.add_argument("--timeout", type=float, default=0, help="대기만 종료한다. 0은 무제한")
+    waiting.add_argument("--summary", action="store_true", help="검증한 결과 본문(최대 8 KiB)과 사용량도 반환")
+    batch = subs.add_parser("wait-many", help="여러 job을 하나의 무쓰기 waiter로 기다린다")
+    batch.add_argument("job_ids", nargs="+")
+    batch.add_argument("--interval", type=float, default=2)
+    batch.add_argument("--timeout", type=float, default=0)
+    batch.add_argument("--summary", action="store_true")
     listing = subs.add_parser("list")
     listing.add_argument("--running", action="store_true", help="아직 끝나지 않은 job만")
     listing.add_argument("--mission", help="이 mission의 job만")
@@ -1176,10 +1211,15 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parser().parse_args()
     config = load_config()
+    if args.command == "wait-many":
+        raise SystemExit(job_wait.run_many(projection.resolve_state_dir(config, ROOT), args.job_ids,
+                                          args.interval, args.timeout, summary=args.summary,
+                                          activity_reader=activity_payload))
     if args.command in {"wait", "watch"}:
         raise SystemExit(job_wait.run(projection.resolve_state_dir(config, ROOT), args.job_id,
                                       args.interval, getattr(args, "timeout", 0),
-                                      watch=args.command == "watch", activity_reader=activity_payload))
+                                      watch=args.command == "watch", activity_reader=activity_payload,
+                                      summary=getattr(args, "summary", False)))
     if args.command == "list":
         # 무쓰기 경로. state_dir()은 디렉터리를 만들고 chmod하므로 쓰지 않는다.
         full = projection.snapshot(projection.resolve_state_dir(config, ROOT))
@@ -1199,7 +1239,7 @@ def main() -> None:
         print_json({"schema_version": projection.SCHEMA_VERSION, "count": len(jobs),
                     "rail": rail, "missions": missions, "jobs": jobs[: args.limit]})
         return
-    root = state_dir(config)
+    root = projection.resolve_state_dir(config, ROOT) if args.command == "start" else state_dir(config)
     try:
         if args.command == "start":
             raise SystemExit(start_job(args, config, root))

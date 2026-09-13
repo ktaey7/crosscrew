@@ -113,10 +113,34 @@ class WaitTests(unittest.TestCase):
     def test_waiter_termination_does_not_cancel_worker_and_reconnect_recovers(self):
         env = {**os.environ, "CROSSCREW_STATE_DIR": str(self.root), "PYTHONDONTWRITEBYTECODE": "1"}
         command = [sys.executable, str(ROOT / "worker_job.py"), "wait", "sample", "--interval", "0.05"]
-        waiter = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        time.sleep(0.12)
-        waiter.send_signal(signal.SIGINT)
-        stdout, _ = waiter.communicate(timeout=3)
+        ready = self.root / "waiter-ready"
+        # Signal only after the real wait loop has entered its guarded snapshot,
+        # rather than racing Python imports before KeyboardInterrupt is handled.
+        bootstrap = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "from pathlib import Path\nimport job_wait, worker_job\n"
+            "original = job_wait.snapshot\n"
+            "def observed_snapshot(*args, **kwargs):\n"
+            "    row = original(*args, **kwargs)\n"
+            f"    Path({str(ready)!r}).touch()\n"
+            "    return row\n"
+            "job_wait.snapshot = observed_snapshot\n"
+            "worker_job.main()\n"
+        )
+        waiter = subprocess.Popen([sys.executable, "-c", bootstrap, *command[2:]],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and waiter.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "waiter did not enter the observation loop")
+            waiter.send_signal(signal.SIGINT)
+            stdout, _ = waiter.communicate(timeout=3)
+        finally:
+            if waiter.poll() is None:
+                waiter.terminate()
+                waiter.communicate(timeout=3)
         self.assertEqual(waiter.returncode, 130)
         self.assertEqual(json.loads(stdout)["wait_status"], "interrupted")
         self.assertFalse((self.job / "canceled.json").exists())

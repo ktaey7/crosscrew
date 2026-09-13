@@ -49,6 +49,7 @@ class AdapterTests(unittest.TestCase):
         env["CROSSCREW_STATE_DIR"] = str(self.state)
         env["CROSSCREW_AGY_PROJECTS_DIR"] = str(self.base / "agy-projects")
         env["HOME"] = str(self.base)
+        env["GROK_HOME"] = str(self.base / ".grok")
         return env
 
     def test_success_has_standard_envelope(self):
@@ -66,6 +67,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertIn("--permission-mode auto", payload["stdout"])
         self.assertIn("--append-system-prompt", payload["stdout"])
+        self.assertIn("--output-format json", payload["stdout"])
         self.assertIn("run diagnostics, tests, builds", payload["stdout"])
         self.assertIn("Do not intentionally edit", payload["stdout"])
         self.assertNotIn("--tools", payload["stdout"])
@@ -111,7 +113,11 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("Give an independent view.", payload["stdout"])
         self.assertEqual(payload["write_policy"], "sandboxed_target_write")
 
-    def test_grok_work_profile_uses_workspace_sandbox_and_private_guarded_prompt(self):
+    def test_grok_work_profile_uses_custom_sandbox_and_private_guarded_prompt(self):
+        import grok_sandbox
+        config = self.base / ".grok" / "sandbox.toml"
+        config.parent.mkdir()
+        config.write_text(grok_sandbox.stanza())
         self.fake(
             "grok",
             "prompt=''; while [ $# -gt 0 ]; do if [ \"$1\" = '--prompt-file' ]; then shift; prompt=$1; fi; shift; done; "
@@ -119,7 +125,7 @@ class AdapterTests(unittest.TestCase):
         )
         completed, payload = self.invoke("grok", "--profile", "work")
         self.assertEqual(completed.returncode, 0)
-        self.assertIn("SANDBOX=workspace", payload["stdout"])
+        self.assertIn(f"SANDBOX={grok_sandbox.NAME}", payload["stdout"])
         self.assertIn("Complete the requested task end-to-end", payload["stdout"])
         self.assertIn("Give an independent view.", payload["stdout"])
         self.assertEqual(payload["write_policy"], "sandboxed_target_write")
@@ -137,8 +143,8 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("dangerously-skip-permissions", payload["stdout"])
         self.assertIn(f"write_file({self.base.resolve()})", payload["stdout"])
         self.assertEqual(payload["write_policy"], "os_sandbox_project_grant_target_write")
-        self.assertEqual(list((self.base / "agy-projects").glob("multi-ai-work-*.json")), [])
-        self.assertEqual(list((self.base / "agy-projects").glob("multi-ai-work-*.lock")), [])
+        self.assertEqual(list((self.base / "agy-projects").glob("crosscrew-work-*.json")), [])
+        self.assertEqual(list((self.base / "agy-projects").glob("crosscrew-work-*.lock")), [])
 
     def test_timeout_kills_process_group(self):
         self.fake("grok", "sleep 2")
@@ -514,7 +520,14 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(set(registry["providers"]), {"claude", "grok"})
 
     def test_same_provider_session_conflict_is_rejected(self):
-        self.fake("grok", "sleep 0.8; printf 'FIRST_OK\\n'")
+        held = self.base / "first-held"
+        release = self.base / "first-release"
+        self.fake(
+            "grok",
+            f"printf held > '{held}'; "
+            f"while [ ! -f '{release}' ]; do sleep 0.05; done; "
+            "printf 'FIRST_OK\\n'",
+        )
         command = [
             "python3",
             str(SCRIPT),
@@ -529,13 +542,32 @@ class AdapterTests(unittest.TestCase):
             "--run-id",
             "shared-run",
         ]
-        first = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.environment())
-        time.sleep(0.15)
-        second = subprocess.run(command, text=True, capture_output=True, env=self.environment(), timeout=5)
-        payload = json.loads(second.stdout)
-        self.assertEqual(second.returncode, 75)
-        self.assertEqual(payload["status"], "conflict")
-        first.communicate(timeout=5)
+        first = subprocess.Popen(
+            command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.environment()
+        )
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline and not held.exists():
+                if first.poll() is not None:
+                    stdout, stderr = first.communicate()
+                    self.fail(
+                        "first process exited before holding the session lock: "
+                        f"{first.returncode} {stdout} {stderr}"
+                    )
+                time.sleep(0.02)
+            self.assertTrue(
+                held.exists(),
+                "first process did not reach the provider with the session lock held",
+            )
+            second = subprocess.run(
+                command, text=True, capture_output=True, env=self.environment(), timeout=5
+            )
+            payload = json.loads(second.stdout)
+            self.assertEqual(second.returncode, 75)
+            self.assertEqual(payload["status"], "conflict")
+        finally:
+            release.write_text("go", encoding="utf-8")
+            first.communicate(timeout=5)
         self.assertEqual(first.returncode, 0)
 
     def test_codex_fresh_extracts_session_and_resume_reuses_it(self):

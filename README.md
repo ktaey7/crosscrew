@@ -30,9 +30,20 @@ The reviewer can keep its session for the next round.
 | A second opinion on a design | Have another model challenge the assumptions and failure cases. |
 | A check before shipping | Get an independent review of the implementation and evidence. |
 | A better plan | Send the revised plan back to the same reviewer and check what remains. |
+| Scoped implementation | Give another model a bounded task, then inspect its changes and tests. |
 
 Bring the CLIs you're already signed into. You don't need every provider,
 and you don't need a new dashboard.
+
+## New in 0.2.0 alpha
+
+- **One route across four AI hosts:** all 12 cross-provider routes use the same typed broker.
+- **Follow-up across all four providers:** `oneshot`, `fresh` and `resume`, including native Gemini conversation IDs.
+- **Collect once:** `wait --summary` returns a bounded answer and usage from the bytes identified by the result hash. `wait-many` observes up to 16 jobs together.
+- **Explicit work permissions:** opt-in Grok runtime directories and temporary exact Gemini command grants.
+- **Honest usage reports:** provider counters stay separate; missing usage and unknown quota savings remain unknown.
+
+[Migration and usage](docs/usage.md) · [Work permissions](docs/work-runtime.md) · [Validation scope](docs/release-validation-2026-09-13.md)
 
 ## A review that changed the plan
 
@@ -53,7 +64,7 @@ A wait timed out and was resumed using the same job ID, without restarting the w
 This check also found a real bug: a broker-started job returned a failure exit code
 while already running. It was fixed in
 [v0.1.0-alpha.3](https://github.com/ktaey7/crosscrew/releases/tag/v0.1.0-alpha.3),
-with a regression test. **402 tests** passed locally and on the macOS Python
+with a regression test. **At that release, 402 tests** passed locally and on the macOS Python
 3.11 / 3.13 [CI matrix](https://github.com/ktaey7/crosscrew/actions/runs/34098984601).
 This is evidence for one working review loop—not a claim that every host combination is verified.
 
@@ -74,7 +85,8 @@ flowchart LR
 - **Follow-up with context.** Start a fresh review, then resume that reviewer's session with your changes.
 - **Results you can check.** Read the result file referenced by path, size and hash. Your host still decides whether the answer holds up.
 
-A small supervisor, native CLI adapters and an optional loopback broker do the work.
+A small supervisor, native CLI adapters and a common loopback broker do the work.
+Running that broker as a persistent service is optional.
 [Read the architecture →](architecture.md)
 
 ## Install from source
@@ -93,22 +105,24 @@ python3 install.py --host claude --host codex
 Choose the hosts you actually use. Add `~/.local/bin` to your shell's PATH if needed,
 then start a new host session if the entrypoint isn't visible.
 
-```bash
-crosscrew doctor --providers claude codex
-```
-
 The installer adds named Crosscrew entrypoints and refuses unrelated file conflicts.
 It does not replace your global AI instructions or start a service.
 
-**Using Codex to call Claude?** That route needs a broker outside the host sandbox.
+**Calling another AI from any supported host?** Start the broker outside the host sandbox.
 In an ordinary terminal, run:
 
 ```bash
 crosscrew broker serve
 ```
 
-Leave that terminal running, then ask your host AI to use Crosscrew. A persistent
-macOS service is optional. [Full setup, routes and service instructions →](docs/usage.md)
+Leave that terminal running. In another terminal, check the selected providers:
+
+```bash
+crosscrew doctor --providers claude codex
+```
+
+Then ask your host AI to use Crosscrew. Doctor makes no model call and does not
+certify native login or billing. A persistent macOS service is optional. [Full setup, routes and service instructions →](docs/usage.md)
 
 <details>
 <summary><strong>Prefer the command line? See the review / re-review flow.</strong></summary>
@@ -117,13 +131,13 @@ macOS service is optional. [Full setup, routes and service instructions →](doc
 crosscrew job start claude /absolute/path/review.md \
   --host codex --target /absolute/path/project \
   --profile review --mode fresh --run-id design-review
-crosscrew job wait JOB_ID_FROM_START
+crosscrew job wait JOB_ID_FROM_START --summary
 
 # After reviewing the feedback and revising the plan:
 crosscrew job start claude /absolute/path/follow-up.md \
   --host codex --target /absolute/path/project \
   --profile review --mode resume --run-id design-review
-crosscrew job wait SECOND_JOB_ID
+crosscrew job wait SECOND_JOB_ID --summary
 ```
 
 Use the actual host and save the returned job IDs. A brief supplies the necessary
@@ -138,7 +152,7 @@ doesn't cancel the worker. [Compact calling card →](quick-contract.md)
 |---|---|
 | **Claude Code + Codex** | Initial focus. Codex → Claude review and same-session follow-up verified with real calls. |
 | **Grok** | Adapter and host entrypoint included; experimental. |
-| **Antigravity (`agy`)** | Experimental adapter; no stable fresh-session flow or automatic host installation. |
+| **Antigravity (`agy`)** | Experimental native JSON/fresh/resume adapter. Host approval remains explicit; no automatic host installation. |
 | **Browser-only chats** | Cannot run this local CLI directly. |
 
 **Alpha boundaries:** background notifications depend on the host. Claude's review
@@ -157,13 +171,13 @@ but cannot fully verify billing. [Authentication details](docs/usage.md#authenti
 
 Use Crosscrew on its own for a second opinion. Use Council's methodology when you
 want independent positions, anonymized criticism and explicit treatment of dissent.
-They are separate projects; Council's existing public runner is not a bundled
-Crosscrew integration.
+They are separate projects. Council can optionally use Crosscrew as transport;
+its discussion rules and legacy runner are not bundled here.
 
 ## Update and remove
 
 Finish running jobs before updating. The source checkout, selected entrypoints and
-optional broker each have an explicit update/removal path. Runtime state is kept
+broker service each have an explicit update/removal path. Runtime state is kept
 outside the checkout and retained on uninstall.
 
 [Update, rollback considerations and removal →](docs/usage.md#update-and-remove)

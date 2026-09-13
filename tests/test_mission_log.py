@@ -292,8 +292,10 @@ class SupervisorMissionTests(unittest.TestCase):
             self.assertFalse((self.state / "jobs" / job_id).exists(), value)
 
     def test_a_job_without_a_mission_still_runs(self):
-        _completed, started = self.start("--job-id", "j-plain")
+        completed, started = self.start("--job-id", "j-plain")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(started["status"], "running")
+        self.assertEqual(started.get("exit_code"), 0)
         self.assertIsNone(started["mission_id"])
 
     def test_event_log_failure_does_not_fail_the_job(self):
@@ -343,7 +345,8 @@ class BrokeredMissionTests(unittest.TestCase):
         fake.chmod(0o755)
 
         cls.env = os.environ.copy()
-        for name in ("CROSSCREW_SUPERVISED", "CROSSCREW_LAUNCHER_SIDECAR", "CROSSCREW_LAUNCHER_TOKEN"):
+        for name in ("CROSSCREW_SUPERVISED", "CROSSCREW_LAUNCHER_SIDECAR", "CROSSCREW_LAUNCHER_TOKEN",
+                     "CROSSCREW_BROKER_CHILD"):
             cls.env.pop(name, None)
         cls.env.pop("CROSSCREW_BROKER_DISABLE", None)
         cls.env["PATH"] = f"{cls.bin}:{cls.env['PATH']}"
@@ -390,9 +393,11 @@ class BrokeredMissionTests(unittest.TestCase):
             return []
 
     def test_labels_reach_the_job_started_on_the_other_side_of_the_broker(self):
-        _completed, payload = self.start("--job-id", "j-brokered", "--mission", "auth-refactor",
+        completed, payload = self.start("--job-id", "j-brokered", "--mission", "auth-refactor",
                                          "--role", "구현", "--round", "2")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(payload["status"], "running", payload)
+        self.assertEqual(payload.get("exit_code"), 0)
         self.assertEqual(payload["transport"], "broker", payload)
         self.assertEqual(payload["mission_id"], "auth-refactor", payload)
         meta = json.loads(
@@ -405,6 +410,18 @@ class BrokeredMissionTests(unittest.TestCase):
         self.assertEqual([e["job_id"] for e in events], ["j-brokered"])
         self.assertEqual(events[0]["role"], "구현")
         self.assertEqual(events[0]["round"], 2)
+
+    def test_brokered_fresh_start_exit_matches_running_acceptance(self):
+        # Observed live: JSON status=running with job_id/session_id, shell exit 1.
+        completed, payload = self.start(
+            "--job-id", "j-accepted-running", "--mode", "fresh", "--profile", "review"
+        )
+        self.assertEqual(payload["status"], "running", payload)
+        self.assertEqual(payload["job_id"], "j-accepted-running")
+        self.assertTrue(payload.get("session_id"), payload)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload.get("exit_code"), 0)
+        self.assertEqual(payload["transport"], "broker", payload)
 
     def test_an_invalid_label_never_reaches_the_broker(self):
         before = len(self.broker_log_lines())

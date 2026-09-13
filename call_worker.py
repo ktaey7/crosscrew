@@ -29,6 +29,11 @@ import media_registry
 import readonly_sandbox
 import run_registry
 import progress
+import provider_usage
+import grok_sandbox
+import grok_auth
+import work_commands
+import agy_response
 import stream_process
 
 try:
@@ -156,7 +161,12 @@ def profile_guard(
         "research": RESEARCH_WORKER_GUARD,
         "work": WORK_WORKER_GUARD,
     }[profile]
-    return f"{guard}\n\nTarget working directory: {target}"
+    return (f"{guard}\n\nTarget working directory: {target}\n"
+            "Task file allowlist: files below the target only. Do not search parent directories, "
+            "other checkouts, private notes, hidden graders or previous agents' answers. "
+            "A narrower file list in the brief takes precedence. Request missing inputs in your "
+            "answer instead of expanding scope. Runtime/authentication files are not task evidence. "
+            "Follow the brief's requested output format and length; omit extra reports when it asks for exact output.")
 
 
 def write_policy(provider_config: dict, profile: str) -> str:
@@ -274,7 +284,7 @@ def load_config() -> dict:
         emit({"status": "config_error", "exit_code": 78, "error": str(exc)}, 78)
 
 
-def resolve_state_dir(config: dict) -> Path:
+def resolve_state_dir(config: dict, *, initialize: bool = True) -> Path:
     override = os.environ.get("CROSSCREW_STATE_DIR")
     if override:
         state_dir = Path(override).expanduser()
@@ -283,6 +293,8 @@ def resolve_state_dir(config: dict) -> Path:
         state_dir = Path(configured).expanduser()
         if not state_dir.is_absolute():
             state_dir = ROOT / state_dir
+    if not initialize:
+        return state_dir
     ensure_private_dir(state_dir)
     ensure_private_dir(state_dir / "locks")
     ensure_private_dir(state_dir / "runs")
@@ -343,21 +355,30 @@ def resolve_model(provider_config: dict, override: str | None) -> tuple[str | No
     return None, "account_default_unpinned"
 
 
-def sanitize(text: str, limit: int) -> str:
-    patterns = (
-        (r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
-        (r"(?i)\b(sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9]{20,})\b", "[REDACTED_TOKEN]"),
-        (r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]"),
-    )
-    for pattern, replacement in patterns:
+_SECRET_PATTERNS = (
+    (r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
+    (r"(?i)\b(sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9]{20,})\b", "[REDACTED_TOKEN]"),
+    (r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]"),
+)
+
+def redact_secrets(text: str) -> str:
+    for pattern, replacement in _SECRET_PATTERNS:
         text = re.sub(pattern, replacement, text)
+    return text
+
+
+def _truncate_utf8(text: str, limit: int) -> str:
     encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) > limit:
-        encoded = encoded[:limit] + b"\n...[truncated]"
-    return encoded.decode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return encoded.decode("utf-8", errors="replace")
+    return encoded[:limit].decode("utf-8", errors="ignore") + "\n...[truncated]"
 
 
-def sanitize_stderr(text: str, limit: int, suppress_provider_diagnostics: bool = False) -> str:
+def sanitize(text: str, limit: int) -> str:
+    return _truncate_utf8(redact_secrets(text), limit)
+
+
+def prepare_stderr(text: str, suppress_provider_diagnostics: bool = False) -> str:
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[REDACTED_EMAIL]", text)
     noisy = (
@@ -385,18 +406,48 @@ def sanitize_stderr(text: str, limit: int, suppress_provider_diagnostics: bool =
         kept.append(f"[suppressed {known_suppressed} known startup warning lines]")
     if provider_suppressed:
         kept.append(f"[suppressed {provider_suppressed} provider diagnostic lines]")
-    return sanitize("\n".join(kept), limit)
+    return redact_secrets("\n".join(kept))
 
 
-def classify(returncode: int, stdout: str, stderr: str, timed_out: bool) -> tuple[str, bool]:
+def sanitize_stderr(text: str, limit: int, suppress_provider_diagnostics: bool = False) -> str:
+    return _truncate_utf8(
+        prepare_stderr(text, suppress_provider_diagnostics),
+        limit,
+    )
+
+
+def _headless_tool_auto_denied(stderr: str) -> bool:
+    """True for a headless auto-deny of a provider tool.
+
+    Matches the distinctive stderr, not the word "permission" in stdout or in
+    auth failures. Retrying the same call cannot prompt for the grant.
+    """
+    text = stderr.lower()
+    return (
+        "headless mode cannot prompt" in text
+        and "auto-denied" in text
+        and "permission" in text
+    )
+
+
+def classify(
+    returncode: int, stdout: str, stderr: str, timed_out: bool, *,
+    tool_denied: bool | None = None,
+) -> tuple[str, bool]:
     combined = f"{stdout}\n{stderr}".lower()
+    denied = _headless_tool_auto_denied(stderr) if tool_denied is None else tool_denied
     if timed_out:
         return "timeout", True
     if returncode == 0 and stdout.strip():
         return "ok", False
     if returncode == 0:
+        # Headless tool auto-deny looks like a successful empty run. Auth and
+        # other non-zero classifiers stay in their historical order below so a
+        # mixed auth+deny stderr cannot be shadowed.
+        if denied:
+            return "tool_permission_denied", False
         return "empty_output", True
-    if re.search(r"auth(?:entication)?[^\n]*(?:expired|required|failed)|login required|unauthorized|401", combined):
+    if re.search(r"auth(?:entication)?[^\n]*(?:expired|required|failed)|login required|unauthorized|\b401\b", combined):
         return "auth_expired", False
     if (
         re.search(r"session[^\n]*(?:not found|expired|invalid)|conversation[^\n]*(?:not found|expired)", combined)
@@ -408,6 +459,7 @@ def classify(returncode: int, stdout: str, stderr: str, timed_out: bool) -> tupl
         or "fs_permission" in combined
         or "failed to initialize in-process app-server client: operation not permitted" in combined
         or "attempt to write a readonly database" in combined
+        or re.search(r"(?m)^sandbox-exec: sandbox_apply: Operation not permitted\s*$", stderr, re.I)
     ):
         return "sandbox_conflict", True
     if (
@@ -419,6 +471,11 @@ def classify(returncode: int, stdout: str, stderr: str, timed_out: bool) -> tupl
         return "blocked", False
     if "already running" in combined or "still running" in combined or "resource busy" in combined:
         return "conflict", True
+    # The same explicit headless denial can also exit non-zero. Preserve the
+    # established auth/session/sandbox classifications above before falling
+    # back to this non-retryable tool failure instead of a generic error.
+    if not stdout.strip() and denied:
+        return "tool_permission_denied", False
     return "error", True
 
 
@@ -469,12 +526,17 @@ def codex_result(jsonl: str) -> tuple[str, str | None]:
     for line in jsonl.splitlines():
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict):
             continue
         if event.get("type") == "thread.started":
-            session_id = event.get("thread_id") or event.get("thread", {}).get("id")
+            thread = event.get("thread")
+            candidate = event.get("thread_id") or (thread.get("id") if isinstance(thread, dict) else None)
+            if isinstance(candidate, str):
+                session_id = candidate
         item = event.get("item") or {}
-        if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+        if isinstance(item, dict) and event.get("type") == "item.completed" and item.get("type") == "agent_message":
             value = item.get("text") or item.get("content")
             if isinstance(value, str):
                 messages.append(value)
@@ -497,10 +559,17 @@ def build_invocation(
     duration: int | None = None,
     effort: str | None = None,
     effort_config_key: str | None = None,
+    allow_commands: list[str] | None = None,
 ) -> tuple[list[str], str | None, Path, dict, Path | None, list[AgyProjectGrant]]:
     prompt = brief.read_text(encoding="utf-8")
     guard = profile_guard(profile, target, media_kind, aspect_ratio, duration, provider)
     guarded_prompt = f"{guard}\n\n---\nTask brief:\n\n{prompt}"
+    if allow_commands:
+        guarded_prompt += ("\n\nHost-authorized terminal commands (use the exact command in target cwd; "
+                           "do not probe other commands or retry sandbox failures):\n"
+                           + "\n".join(allow_commands)
+                           + "\nThese commands retain the outer OS write confinement. "
+                           "The native terminal sandbox is bypassed only for these exact grants.")
     env = os.environ.copy()
     last_message: Path | None = None
     cleanup_grants: list[AgyProjectGrant] = []
@@ -515,7 +584,7 @@ def build_invocation(
             guard,
             "--disable-slash-commands",
             "--output-format",
-            "text",
+            "json",
             "--add-dir",
             str(target),
         ]
@@ -584,7 +653,7 @@ def build_invocation(
         # including when the long-lived broker has an older environment.
         for surface in ("SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"):
             env[f"GROK_CLAUDE_{surface}_ENABLED"] = "false"
-        env["GROK_SANDBOX"] = "workspace" if profile == "work" else "read-only"
+        env["GROK_SANDBOX"] = grok_sandbox.NAME if profile == "work" else "read-only"
         if profile == "media":
             for key in tuple(env):
                 if (
@@ -624,12 +693,14 @@ def build_invocation(
     if provider == "agy":
         prompt_file = temp_dir / "agy-brief.md"
         secure_write_text(prompt_file, guarded_prompt)
-        argv = [command]
+        # AGY ignores --mode when slash/skill expansion is disabled. Preserve
+        # its existing plan/accept-edits behavior while requesting JSON output.
+        argv = [command, "--output-format", "json"]
         if mode == "resume":
             argv += ["--conversation", session_id]
         print_timeout = f"{max(1, int(timeout))}s" if timeout > 0 else "8760h"
         if profile == "work":
-            grant = create_work_project(target)
+            grant = create_work_project(target, allow_commands)
             cleanup_grants.append(grant)
             argv += [
                 "--project",
@@ -726,8 +797,11 @@ def execute_once(
     began = time.monotonic()
     limit = int(config["defaults"].get("max_output_bytes", 1048576))
     stderr_limit = int(config["defaults"].get("max_stderr_bytes", 32768))
-    with tempfile.TemporaryDirectory(prefix=f"multi-ai-{args.provider}-") as raw_temp:
+    with tempfile.TemporaryDirectory(prefix=f"crosscrew-{args.provider}-") as raw_temp:
         temp_dir = Path(raw_temp)
+        allow_commands = getattr(args, "allow_command", [])
+        if allow_commands and not readonly_sandbox.enabled_for(provider_config, args.profile):
+            raise ValueError("AGY command grants require the outer OS write sandbox")
         argv, stdin_text, cwd, env, last_message, cleanup_grants = build_invocation(
             args.provider,
             command,
@@ -744,12 +818,14 @@ def execute_once(
             args.duration,
             args.effort,
             effort_registry.config_key(config, args.provider),
+            allow_commands,
         )
-        argv, os_sandbox_applied = readonly_sandbox.wrap(
-            argv, provider_config, args.profile, args.target, temp_dir
-        )
-        observer = progress.Writer(env) if args.provider == "codex" and env.get("CROSSCREW_PROGRESS_FILE") else None
+        observer = None
         try:
+            argv, os_sandbox_applied = readonly_sandbox.wrap(
+                argv, provider_config, args.profile, args.target, temp_dir
+            )
+            observer = progress.Writer(env) if args.provider == "codex" and env.get("CROSSCREW_PROGRESS_FILE") else None
             if observer is not None:
                 returncode, raw_stdout, raw_stderr, timed_out = stream_process.run(
                     argv, stdin_text, cwd, env, args.timeout, observer, limit, stderr_limit)
@@ -766,21 +842,47 @@ def execute_once(
 
         parsed_session = session_id
         stdout = raw_stdout
-        if args.provider == "codex" and mode != "oneshot":
+        usage = None
+        provider_error = False
+        output_error = None
+        structured_status = None
+        if args.provider == "claude":
+            stdout, detected_session, usage, provider_error, output_error = provider_usage.claude_result(raw_stdout)
+            if session_id and detected_session and detected_session != session_id:
+                output_error = "session_mismatch"
+            else:
+                parsed_session = detected_session or parsed_session
+        elif args.provider == "codex":
+            usage = provider_usage.codex_usage(raw_stdout)
             parsed_text, detected_session = codex_result(raw_stdout)
             parsed_session = detected_session or parsed_session
             if last_message and last_message.exists():
                 stdout = last_message.read_text(encoding="utf-8", errors="replace")
             elif parsed_text:
                 stdout = parsed_text
+            elif raw_stdout.lstrip().startswith(("{", "[")):
+                stdout = ""  # A partial event stream is not a final answer.
+        elif args.provider == "grok":
+            usage = provider_usage.grok_usage(args.target, parsed_session, started_at)
+        elif args.provider == "agy":
+            parsed = agy_response.parse_agy_response(raw_stdout)
+            stdout, usage = parsed["stdout"], parsed["usage"]
+            structured_status = parsed["status"]
+            detected_session = parsed["session_id"]
+            if session_id and detected_session and detected_session != session_id:
+                output_error = "session_mismatch"
+            elif mode in {"fresh", "resume"} and structured_status == "ok" and not detected_session:
+                output_error = "session_id_missing"
+            else:
+                parsed_session = detected_session or parsed_session
         elif last_message and last_message.exists():
             stdout = last_message.read_text(encoding="utf-8", errors="replace")
 
-    stderr = sanitize_stderr(
+    prepared_stderr = prepare_stderr(
         raw_stderr,
-        stderr_limit,
         suppress_provider_diagnostics=args.provider == "agy" and returncode == 0,
     )
+    stderr = _truncate_utf8(prepared_stderr, stderr_limit)
     stdout = sanitize(stdout, limit)
     artifacts: list[dict] = []
     artifact_error: str | None = None
@@ -798,7 +900,16 @@ def execute_once(
         except ArtifactError as exc:
             artifact_error = str(exc)
             artifact_error_code = getattr(exc, "code", None)
-    status, retryable = classify(returncode, stdout, stderr, timed_out)
+    status, retryable = classify(
+        returncode or (1 if provider_error else 0), stdout, stderr, timed_out,
+        tool_denied=_headless_tool_auto_denied(prepared_stderr)
+    )
+    if output_error and returncode == 0 and not timed_out:
+        status, retryable = "invalid_output", False
+    elif structured_status and not timed_out and status in {"ok", "error", "empty_output"}:
+        if structured_status != "ok":
+            status = structured_status
+            retryable = status in {"error", "empty_output"}
     if args.profile == "media" and returncode == 0 and not timed_out:
         # Precedence: a verified artifact, then the provider's own explicit
         # reason, then our inferences about missing directories. The provider
@@ -832,7 +943,7 @@ def execute_once(
         "retryable": retryable,
         "provider": args.provider,
         "host": args.host,
-        "transport": "direct",
+        "transport": "broker" if broker_client.in_broker_child() else "direct",
         "model": model,
         "model_source": model_source,
         "model_pinned": model is not None,
@@ -848,9 +959,14 @@ def execute_once(
         "stdout": stdout,
         "stderr_sanitized": stderr,
         "write_policy": write_policy(provider_config, args.profile),
+        "read_policy": ("native_custom_target_scope" if args.provider == "grok" and args.profile == "work"
+                        else "prompt_guarded_target_scope"),
         "os_sandbox": os_sandbox_applied,
         "rehydrated": False,
+        "usage": usage,
     }
+    if output_error:
+        result["provider_output_error"] = output_error
     if observer is not None:
         result["progress_degraded"] = observer.degraded or observer.decoder.dropped
     if readonly_sandbox.enabled_for(provider_config, args.profile) and not os_sandbox_applied:
@@ -895,6 +1011,13 @@ def execute_once(
             )
     if status == "sandbox_conflict":
         result["requires_host_escalation"] = True
+    if status == "tool_permission_denied":
+        result["hint"] = (
+            "A provider tool was auto-denied because headless mode cannot prompt. "
+            "Do not retry the same call; it will fail the same way. "
+            "--check reports reachability only, not tool permissions or web reads. "
+            "Do not bypass provider tool permissions from this layer."
+        )
     if status == "target_not_trusted":
         result["hint"] = (
             "The provider refused this target because it is outside a version-controlled "
@@ -927,6 +1050,8 @@ def broker_payload(args: argparse.Namespace, action: str) -> dict:
         payload["model"] = args.model
     if args.effort:
         payload["effort"] = args.effort
+    if getattr(args, "allow_command", None):
+        payload["allow_commands"] = args.allow_command
     if args.media_kind:
         payload["media_kind"] = args.media_kind
     if args.output_dir:
@@ -960,7 +1085,7 @@ def check_provider(args: argparse.Namespace, provider_config: dict, config: dict
     broker_health = None
     broker_unavailable_reason = None
     if route == "broker":
-        state = resolve_state_dir(config)
+        state = resolve_state_dir(config, initialize=False)
         broker_health = broker_client.health(state)
         if broker_health is None:
             broker_unavailable_reason = broker_client.unavailable_reason(state)
@@ -980,6 +1105,8 @@ def check_provider(args: argparse.Namespace, provider_config: dict, config: dict
         "write_policy": write_policy(provider_config, args.profile),
         "route": route,
         "requires_host_escalation": route in {"broker", "requires_host_escalation"},
+        "check_scope": "reachability",
+        "check_unverified": ["authentication", "tool_permissions", "web_reads"],
     }
     if route == "broker":
         payload["broker_available"] = broker_health is not None
@@ -1020,6 +1147,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--mode", choices=("oneshot", "fresh", "resume"), default="oneshot")
     value.add_argument("--profile", choices=("review", "work", "research", "media"), default="review")
     value.add_argument("--model")
+    value.add_argument("--allow-command", action="append", default=[],
+                       help="exact AGY work command granted within outer OS write confinement; repeatable")
     # Allowed values come from the registry, not from argparse: the provider that
     # accepts an effort and the values it accepts are registry facts, and a stale
     # choices= list here would drift from them silently.
@@ -1055,6 +1184,10 @@ def main() -> None:
 
     if args.timeout is None:
         args.timeout = float(config["defaults"].get("timeout_seconds", 0))
+    try:
+        args.allow_command = work_commands.validate(args.allow_command, args.provider, args.profile)
+    except ValueError as error:
+        emit({"status": "invalid_command_grant", "exit_code": 64, "error": str(error)}, 64)
     args.target = args.target.expanduser().resolve()
     if not args.check:
         blocked = billing.refusal(args.provider, args.target)
@@ -1235,32 +1368,7 @@ def main() -> None:
     if not args.target.is_dir():
         emit({"status": "invalid_input", "exit_code": 66, "error": f"target directory not found: {args.target}"}, 66)
 
-    state_dir = resolve_state_dir(config)
-    # 소유권을 여기서 확정한다. 이후의 lock·spawn·registry write가 전부 이 판정
-    # 위에서 돈다. read-time 확인만으로는 그 사이에 남이 파일을 만들 수 있다.
-    try:
-        run_registry.claim(state_dir, args.run_id)
-    except run_registry.RunIdCollision as exc:
-        emit(
-            {
-                "status": "run_id_collision",
-                "exit_code": 64,
-                "run_id": args.run_id,
-                "conflicting_run_id": exc.stored,
-                "registry_file": exc.path.name,
-                # 두 원인은 조치가 다르다. 하나로 뭉뚱그리면 손상된 경우에
-                # 사용자가 빠져나올 방법을 모른다.
-                "hint": (
-                    f"run ID '{exc.stored}'가 이미 이 파일을 소유한다. "
-                    "run ID를 [A-Za-z0-9_.-] 안에서 다르게 짓는다."
-                    if exc.stored is not None else
-                    f"registry 파일이 손상됐다: {exc.path}. 조용히 덮어쓰면 살아 있는 "
-                    "session ID가 사라지므로 막는다. 내용을 확인하고, 버려도 되면 "
-                    "그 파일을 지운 뒤 다시 실행한다."
-                ),
-            },
-            64,
-        )
+    state_dir = resolve_state_dir(config, initialize=False)
     route = route_for(config, args.host, args.provider, args.profile, args.mode)
 
     if route == "in_process" and not args.allow_self_delegation:
@@ -1313,6 +1421,33 @@ def main() -> None:
             77,
         )
 
+    state_dir = resolve_state_dir(config)
+    # 소유권을 여기서 확정한다. 이후의 lock·spawn·registry write가 전부 이 판정
+    # 위에서 돈다. read-time 확인만으로는 그 사이에 남이 파일을 만들 수 있다.
+    try:
+        run_registry.claim(state_dir, args.run_id)
+    except run_registry.RunIdCollision as exc:
+        emit(
+            {
+                "status": "run_id_collision",
+                "exit_code": 64,
+                "run_id": args.run_id,
+                "conflicting_run_id": exc.stored,
+                "registry_file": exc.path.name,
+                # 두 원인은 조치가 다르다. 하나로 뭉뚱그리면 손상된 경우에
+                # 사용자가 빠져나올 방법을 모른다.
+                "hint": (
+                    f"run ID '{exc.stored}'가 이미 이 파일을 소유한다. "
+                    "run ID를 [A-Za-z0-9_.-] 안에서 다르게 짓는다."
+                    if exc.stored is not None else
+                    f"registry 파일이 손상됐다: {exc.path}. 조용히 덮어쓰면 살아 있는 "
+                    "session ID가 사라지므로 막는다. 내용을 확인하고, 버려도 되면 "
+                    "그 파일을 지운 뒤 다시 실행한다."
+                ),
+            },
+            64,
+        )
+
     registry = read_registry(state_dir, args.run_id)
     session_id = args.session_id
     if args.mode == "resume" and not session_id:
@@ -1343,6 +1478,11 @@ def main() -> None:
                 },
                 65,
             )
+        previous_target = registry_entry.get("target")
+        if previous_target and previous_target != str(args.target):
+            emit({"status": "target_mismatch", "exit_code": 65, "provider": args.provider,
+                  "run_id": args.run_id, "target": str(args.target), "previous_target": previous_target,
+                  "hint": "Start a fresh session for a different target."}, 65)
         updated_at = registry_entry.get("updated_at")
         max_age = float(config["defaults"].get("resume_max_age_seconds", 604800))
         try:
@@ -1366,7 +1506,22 @@ def main() -> None:
     elif args.mode == "fresh" and args.provider in {"claude", "grok"} and not session_id:
         session_id = str(uuid.uuid4())
 
+    if args.provider == "grok" and args.profile == "work" and not grok_sandbox.ready():
+        emit({"status": "sandbox_unavailable", "exit_code": 78, "provider": args.provider,
+              "profile": args.profile, "retryable": False,
+              "hint": "Install the reviewed named profile with crosscrew grok-sandbox --install. No provider was started."}, 78)
+
+    if args.provider == "grok" and args.profile == "work":
+        native_command = shutil.which(provider_config["command"])
+        auth_error = grok_auth.prepare(native_command) if native_command else None
+        if auth_error:
+            emit({"status": auth_error, "exit_code": 69, "provider": "grok", "retryable": False,
+                  "hint": "Native login refresh failed before strict sandbox entry. Check grok login; no worker was started."}, 69)
+
     lock_key = session_id or args.run_id
+    if args.allow_command and not readonly_sandbox.enabled_for(provider_config, args.profile):
+        emit({"status": "sandbox_unavailable", "exit_code": 78, "provider": args.provider,
+              "retryable": False, "hint": "AGY command grants require outer OS write confinement. No provider was started."}, 78)
     with exclusive_lock(state_dir, args.provider, lock_key) as acquired:
         if not acquired:
             emit(
@@ -1428,6 +1583,7 @@ def main() -> None:
                 "mode": result["mode"],
                 "profile": result["profile"],
                 "updated_at": utc_now(),
+                "target": str(args.target),
             },
         )
         emit(result, 0 if result["status"] == "ok" else result["exit_code"] or 1)

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import TextIO
 import uuid
+import work_commands
 
 
 @dataclass
@@ -52,7 +53,7 @@ def cleanup_orphan_projects(directory: Path | None = None) -> list[str]:
     if not root.exists():
         return []
     removed: list[str] = []
-    for project_path in sorted(root.glob("multi-ai-work-*.json")):
+    for project_path in sorted(root.glob("crosscrew-work-*.json")):
         lock_path = project_path.with_suffix(".lock")
         try:
             fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -71,11 +72,12 @@ def cleanup_orphan_projects(directory: Path | None = None) -> list[str]:
     return removed
 
 
-def create_work_project(target: Path) -> AgyProjectGrant:
+def create_work_project(target: Path, allow_commands: list[str] | None = None) -> AgyProjectGrant:
+    rules = work_commands.permission_rules(allow_commands or [])
     root = projects_dir()
     ensure_private_dir(root)
     cleanup_orphan_projects(root)
-    project_id = f"multi-ai-work-{uuid.uuid4()}"
+    project_id = f"crosscrew-work-{uuid.uuid4()}"
     project_path = root / f"{project_id}.json"
     lock_path = root / f"{project_id}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
@@ -86,10 +88,10 @@ def create_work_project(target: Path) -> AgyProjectGrant:
             project_path,
             {
                 "id": project_id,
-                "name": f"Multi-AI work: {target.name or 'target'}",
+                "name": f"Crosscrew work: {target.name or 'target'}",
                 "projectResources": {"resources": [{"folderUri": target.as_uri()}]},
                 "permissionGrants": {
-                    "permissionGrants": {"allow": [f"write_file({target})"]}
+                    "permissionGrants": {"allow": [f"write_file({target})", *rules]}
                 },
             },
         )

@@ -28,8 +28,8 @@
     "shell": "Plain shell, used for diagnostics and acceptance tests."
   },
   "routes": {
-    "direct": "Host spawns the provider itself.",
-    "broker": "Host cannot spawn the provider; the loopback escalation broker runs it outside the host sandbox. Falls back to needs_host_escalation when the broker is unreachable.",
+    "direct": "Plain-shell diagnostics only; normal AI hosts use the typed loopback broker.",
+    "broker": "Common cross-provider route for all four AI hosts. An unavailable/stale broker fails closed; no automatic direct execution.",
     "requires_host_escalation": "No automatic escalation. The user must re-run the same command outside the host sandbox with --host-escalated.",
     "in_process": "Self-delegation. The host answers in-process instead of spawning another copy of itself.",
     "companion_preferred": "A host-native companion or plugin is the primary path; the CLI adapter is the fallback."
@@ -168,7 +168,11 @@
         "tool": "Grok Build Imagine (image_gen, image_to_video) on the logged-in consumer subscription",
         "notes": "Never uses xAI API credentials. Video output on a ZDR team requires a private upload target; the adapter refuses with zdr_output_required instead of retrying."
       },
-      "notes": "GROK_SANDBOX is read-only for review/research/media and workspace for work. Media always uses a fresh session, restricts tools to Imagine, scrubs API-key environment variables, and verifies copied artifacts. Grok nests its own sandbox, so sandboxed hosts route through the broker."
+      "notes": "Review/research/media use native read-only. Work requires a separately installed crosscrew-target-v1 custom profile extending strict; no runtime directories are implicitly granted. Known expiring native login may be refreshed with grok models before work. No credentials are exported.",
+      "work_sandbox": {
+        "profile": "crosscrew-target-v1",
+        "runtime_read_paths": []
+      }
     },
     "agy": {
       "command": "agy",
@@ -181,6 +185,7 @@
       ],
       "modes": [
         "oneshot",
+        "fresh",
         "resume"
       ],
       "profiles": [
@@ -210,21 +215,21 @@
         ],
         "reason": "A 2026-07-25 live probe showed agy's --mode plan --sandbox does not stop its file-writing tools: it created, overwrote, and wrote outside the target. Write confinement is enforced by seatbelt instead of being assumed."
       },
-      "notes": "Review/research inspect the target under a seatbelt profile that denies every write outside agy's own state and temp space. Work additionally allows writes inside the target and denies everything else, on top of the temporary project-scoped write_file(target) grant and accept-edits. Never receives --dangerously-skip-permissions."
+      "notes": "Native JSON answer/conversation ID/usage parsing. Fresh/resume reuse the observed conversation ID. Work commands require explicit exact grants and outer OS write confinement. Web tool availability and permissions vary."
     }
   },
   "host_matrix": {
     "claude": {
       "claude": "in_process",
-      "codex": "direct",
-      "grok": "direct",
-      "agy": "direct"
+      "codex": "broker",
+      "grok": "broker",
+      "agy": "broker"
     },
     "codex": {
       "claude": "broker",
       "codex": "in_process",
       "grok": "broker",
-      "agy": "direct"
+      "agy": "broker"
     },
     "grok": {
       "claude": "broker",
@@ -245,13 +250,7 @@
       "agy": "direct"
     }
   },
-  "profile_host_matrix": {
-    "codex": {
-      "agy": {
-        "work": "broker"
-      }
-    }
-  },
+  "profile_host_matrix": {},
   "mode_host_matrix": {},
   "role_policy": {
     "rules": []

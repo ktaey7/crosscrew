@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"FINAL_CLAUDE\n","session_id":"11223344-5566-7788-99aa-bbccddeeff00","usage":{"input_tokens":12,"cache_creation_input_tokens":34,"cache_read_input_tokens":56,"output_tokens":78,"unknown_secret":"DO_NOT_COPY"},"total_cost_usd":0.123,"modelUsage":{"ignored":"DO_NOT_COPY"}}

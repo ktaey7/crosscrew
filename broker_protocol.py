@@ -20,6 +20,7 @@ import sys
 import effort_registry
 import media_registry
 import mission_log
+import work_commands
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("CROSSCREW_BACKENDS_CONFIG", ROOT / "backends.json"))
@@ -54,6 +55,7 @@ DURATIONS = (6, 10)
 # worker_job.py·call_worker.py는 여기 없다. broker가 subprocess로 띄우므로 항상
 # 디스크의 최신 코드이고, 넣으면 무관한 편집마다 오탐이 난다.
 CONTRACT_FILES = (
+    "work_commands.py",
     "multiai_broker.py",     # 서버 자신
     "broker_protocol.py",    # 검증과 argv 생성
     "effort_registry.py",    # validate가 부르는 판정기
@@ -217,8 +219,15 @@ def validate(payload: dict) -> dict:
     request["provider"] = _enum(payload, "provider", PROVIDERS, required=True)
     request["host"] = _enum(payload, "host", HOSTS, required=True)
     request["profile"] = _enum(payload, "profile", PROFILES) or "review"
+    try:
+        request["allow_commands"] = work_commands.validate(
+            payload.get("allow_commands"), request["provider"], request["profile"])
+    except ValueError as error:
+        raise RequestError("allow_commands", str(error)) from error
 
     if action == "check":
+        if request["allow_commands"]:
+            raise RequestError("allow_commands", "command grants require a work call or start, not check")
         return request
 
     request["mode"] = _enum(payload, "mode", MODES) or "oneshot"
@@ -333,6 +342,8 @@ def build_argv(request: dict) -> list[str]:
         argv += ["--model", request["model"]]
     if request.get("effort"):
         argv += ["--effort", request["effort"]]
+    for command in request.get("allow_commands", []):
+        argv += ["--allow-command", command]
     if request.get("media_kind"):
         argv += ["--media-kind", request["media_kind"]]
     if request.get("output_dir"):

@@ -30,14 +30,19 @@ files are replaced. Host discovery after installation may require a new session.
 For agy, manually provide the calling card and `--host agy`; there is no automatic
 edit to `GEMINI.md` in this release.
 
+All normal AI-host routes need a broker outside the host sandbox. In an ordinary
+terminal, start `crosscrew broker serve` and leave it running (or use the optional
+service below). In another terminal:
+
 ```bash
 crosscrew doctor --providers claude codex
 crosscrew call codex --host claude --check
 ```
 
-Doctor checks availability and known API-auth overrides without calling a model.
+Doctor checks CLI availability, known API-auth overrides and broker reachability without calling a model.
 `checks_passed` does **not** mean authentication, billing or a real task was verified.
-A missing broker is reported separately because direct routes do not need one.
+A missing/stale broker returns `attention` and a nonzero exit code. Grok work-profile
+readiness is reported separately; a missing optional work profile does not block reviews.
 
 ## First review, then follow-up
 
@@ -54,20 +59,28 @@ result. The equivalent CLI flow is:
 crosscrew job start codex /absolute/path/review.md \
   --host claude --target /absolute/path/project \
   --profile review --mode fresh --run-id design-review
-crosscrew job wait JOB_ID_FROM_START
+crosscrew job wait JOB_ID_FROM_START --summary
 
 # After evaluating the result and revising the plan:
 crosscrew job start codex /absolute/path/follow-up.md \
   --host claude --target /absolute/path/project \
   --profile review --mode resume --run-id design-review
-crosscrew job wait SECOND_JOB_ID
+crosscrew job wait SECOND_JOB_ID --summary
 ```
 
 The actual host must be supplied; `--host shell` is for a real ordinary terminal,
 not a workaround for another host's sandbox. Briefs carry the necessary context;
 Crosscrew does not copy the entire host conversation. Results include session
-metadata when the provider supplies it. `wait` returns a result reference with
-path, size and SHA-256; the host reads and verifies that file. The file may be
+metadata when the provider supplies it. All four providers support fresh/resume.
+Implicit resume checks the stored profile/target and age (default seven days).
+Legacy records without a target cannot enforce that check. `--session-id` explicitly
+imports a native session and bypasses those registry checks: verify its scope yourself;
+prefer a fresh session for a new profile or target.
+
+`wait` returns a result reference with path, size and SHA-256. `--summary` additionally
+returns up to 8 KiB of UTF-8 answer text, session and usage from those same bytes.
+When `stdout_truncated` is false, do not reread/rehash merely to collect the same
+answer; still verify claims, sources, diff and tests. The file may be
 `result.pending.json` before collection. Waiting can time out without canceling
 the worker. Reconnect with the same job ID instead of starting a duplicate.
 
@@ -75,9 +88,26 @@ See `crosscrew card` and `crosscrew job --help`. Work/research profiles exist bu
 require the corresponding user scope; a successful worker response is not a
 substitute for host verification.
 
-## Optional broker for sandboxed hosts
+For several jobs, use one bounded wait:
 
-Some routes, including Codex → Claude, require a broker outside the host sandbox.
+```bash
+crosscrew job wait-many JOB1 JOB2 --summary --timeout 600
+```
+
+It accepts at most 16 job IDs and emits one JSON response on completion or timeout.
+Timeout and SIGINT stop observation only; neither cancels workers. `wait` and
+`wait-many` are read-only; `status`/`collect` may reconcile state. Native output
+errors and tool denials remain failures, even with a partial answer.
+
+For implementation, see [work-runtime.md](work-runtime.md) and
+[host-approvals.md](host-approvals.md). For a focused brief see
+[worker-workflow.md](worker-workflow.md). Provider usage and explicit Codex-host
+comparisons are documented in [usage-accounting.md](usage-accounting.md).
+
+## Common broker, optional persistent service
+
+All 12 cross-provider routes among Claude, Codex, Grok and agy use a broker outside
+the host sandbox. Self-delegation is refused; the current AI answers in-process.
 The broker can start a native CLI with your account's permissions. It validates
 typed requests and authenticates a loopback connection, but does not add an OS
 sandbox to Claude. It is not a remote server or a multi-user security boundary.
@@ -135,8 +165,13 @@ crosscrew doctor --providers claude codex
 ```
 
 For a tagged version, inspect release notes and check out its tag instead. This
-alpha has no automatic updater or state migrations. The broker rejects stale
-contracts; restart it after updates. Keep a private backup of runtime state before
+alpha has no automatic updater or state migrations. Moving from 0.1 to 0.2 requires
+a broker for previously direct AI-host routes. If you maintain an external registry,
+merge the new `host_matrix`, empty profile/mode overrides, agy modes and Grok
+`work_sandbox` fields explicitly; an old override does not update itself. The broker rejects stale
+contracts; restart it after updates (stop/start the foreground process, or use
+`broker restart` for the installed service). Grok work additionally requires the
+explicit [named-profile setup](work-runtime.md); existing profiles are preserved. Keep a private backup of runtime state before
 changing versions. A code rollback does not roll back provider sessions.
 
 To remove your selected entrypoints and launcher:

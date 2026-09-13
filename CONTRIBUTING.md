@@ -29,8 +29,10 @@ python3 quick_contract.py > quick-contract.md
 ```
 
 For a new provider, see [architecture.md](architecture.md). Do not claim supported
-status from a route matrix alone. Do not add auto-login, credential import,
-subscription-to-API proxies or silent billing fallbacks.
+status from a route matrix alone. Do not add interactive auto-login, credential import,
+subscription-to-API proxies or silent billing fallbacks. Grok work may use its
+native model-list request to refresh a recognized expiring cache; test it with
+synthetic tokens and a fake CLI, never a contributor's real credentials.
 
 Before publishing, scan the full staged tree for credentials, personal absolute
 paths, prompts and runtime state. Never attach `.state`, `.briefs`, user config

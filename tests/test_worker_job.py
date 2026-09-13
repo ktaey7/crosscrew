@@ -42,6 +42,7 @@ class WorkerJobTests(unittest.TestCase):
         env["CROSSCREW_STATE_DIR"] = str(self.state)
         env["CROSSCREW_AGY_PROJECTS_DIR"] = str(self.base / "agy-projects")
         env["HOME"] = str(self.base)
+        env["GROK_HOME"] = str(self.base / ".grok")
         return env
 
     def invoke(self, *args, expected=None):
@@ -80,27 +81,57 @@ class WorkerJobTests(unittest.TestCase):
             return False
 
     def test_start_returns_immediately_and_collects_result(self):
-        self.fake_claude("sleep 0.4; printf 'JOB_OK\\n'")
-        started_at = time.monotonic()
-        _, started = self.invoke(
-            "start",
-            "claude",
-            str(self.brief),
-            "--target",
-            str(self.base),
-            "--job-id",
-            "job-success",
-            expected=0,
+        # Acceptance must return while the worker is still blocked. A wall-clock
+        # bound conflates interpreter startup with worker completion.
+        release = self.base / "release-start"
+        self.fake_claude(
+            f"while [ ! -f '{release}' ]; do sleep 0.05; done; printf 'JOB_OK\\n'"
         )
-        self.assertLess(time.monotonic() - started_at, 0.3)
-        self.assertEqual(started["status"], "running")
-        self.assertIsNone(started["hard_timeout_seconds"])
-        final_status = self.wait_until_done("job-success")
-        self.assertEqual(final_status["status"], "completed")
-        self.assertLess(final_status["duration_seconds"], 2)
-        _, result = self.invoke("collect", "job-success", expected=0)
+        try:
+            try:
+                _, started = self.invoke(
+                    "start",
+                    "claude",
+                    str(self.brief),
+                    "--target",
+                    str(self.base),
+                    "--job-id",
+                    "job-success",
+                    expected=0,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail("start blocked until the worker finished instead of accepting the job")
+            self.assertEqual(started["status"], "running")
+            self.assertIsNone(started["hard_timeout_seconds"])
+            self.assertTrue(self.process_alive(started["pid"]))
+            _, mid_status = self.invoke("status", "job-success", expected=0)
+            self.assertEqual(mid_status["status"], "running")
+            release.write_text("go", encoding="utf-8")
+            final_status = self.wait_until_done("job-success")
+            self.assertEqual(final_status["status"], "completed")
+            self.assertLess(final_status["duration_seconds"], 5)
+            _, result = self.invoke("collect", "job-success", expected=0)
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("JOB_OK", result["stdout"])
+        finally:
+            release.write_text("go", encoding="utf-8")
+
+    def test_deliberate_self_delegation_reaches_worker(self):
+        self.fake_claude("printf 'DELIBERATE_SELF_OK\\n'")
+        _, rejected = self.invoke(
+            "start", "claude", str(self.brief), "--host", "claude",
+            "--target", str(self.base), expected=64,
+        )
+        self.assertEqual(rejected["status"], "self_delegation")
+        _, started = self.invoke(
+            "start", "claude", str(self.brief), "--host", "claude",
+            "--target", str(self.base), "--allow-self-delegation",
+            "--job-id", "deliberate-self", expected=0,
+        )
+        self.wait_until_done(started["job_id"])
+        _, result = self.invoke("collect", started["job_id"], expected=0)
         self.assertEqual(result["status"], "ok")
-        self.assertIn("JOB_OK", result["stdout"])
+        self.assertIn("DELIBERATE_SELF_OK", result["stdout"])
 
     def test_work_profile_is_propagated_to_job_metadata_and_result(self):
         self.fake_claude("printf 'WORK_JOB_OK\\n'")
@@ -221,7 +252,7 @@ class WorkerJobTests(unittest.TestCase):
         self.assertEqual(payload["status"], "zdr_output_required")
         self.assertEqual(payload["privacy_scope"], "coding_data_opt_out")
         self.assertFalse(payload["private_output_configured"])
-        self.assertEqual(list((self.state / "jobs").iterdir()), [])
+        self.assertEqual(list((self.state / "jobs").glob("*")), [])
 
     def test_agy_work_profile_is_propagated_and_project_grant_is_cleaned(self):
         self.fake("agy", "printf 'AGY_WORK_JOB_OK\\n'")
@@ -244,8 +275,8 @@ class WorkerJobTests(unittest.TestCase):
         self.assertEqual(result["profile"], "work")
         self.assertEqual(result["write_policy"], "os_sandbox_project_grant_target_write")
         self.assertIn("AGY_WORK_JOB_OK", result["stdout"])
-        self.assertEqual(list((self.base / "agy-projects").glob("multi-ai-work-*.json")), [])
-        self.assertEqual(list((self.base / "agy-projects").glob("multi-ai-work-*.lock")), [])
+        self.assertEqual(list((self.base / "agy-projects").glob("crosscrew-work-*.json")), [])
+        self.assertEqual(list((self.base / "agy-projects").glob("crosscrew-work-*.lock")), [])
 
     def test_agy_work_project_grant_is_cleaned_on_explicit_cancel(self):
         self.fake("agy", "sleep 30")
@@ -263,13 +294,13 @@ class WorkerJobTests(unittest.TestCase):
         )
         projects = self.base / "agy-projects"
         deadline = time.time() + 3
-        while time.time() < deadline and not list(projects.glob("multi-ai-work-*.json")):
+        while time.time() < deadline and not list(projects.glob("crosscrew-work-*.json")):
             time.sleep(0.05)
-        self.assertTrue(list(projects.glob("multi-ai-work-*.json")))
+        self.assertTrue(list(projects.glob("crosscrew-work-*.json")))
         _, canceled = self.invoke("cancel", started["job_id"], expected=0)
         self.assertEqual(canceled["status"], "canceled")
-        self.assertEqual(list(projects.glob("multi-ai-work-*.json")), [])
-        self.assertEqual(list(projects.glob("multi-ai-work-*.lock")), [])
+        self.assertEqual(list(projects.glob("crosscrew-work-*.json")), [])
+        self.assertEqual(list(projects.glob("crosscrew-work-*.lock")), [])
 
     def test_agy_orphan_grant_after_sigkill_is_reclaimed_by_purge(self):
         self.fake("agy", "sleep 30")
@@ -279,9 +310,9 @@ class WorkerJobTests(unittest.TestCase):
         )
         projects = self.base / "agy-projects"
         deadline = time.time() + 3
-        while time.time() < deadline and not list(projects.glob("multi-ai-work-*.json")):
+        while time.time() < deadline and not list(projects.glob("crosscrew-work-*.json")):
             time.sleep(0.05)
-        self.assertTrue(list(projects.glob("multi-ai-work-*.json")))
+        self.assertTrue(list(projects.glob("crosscrew-work-*.json")))
         os.killpg(started["pgid"], signal.SIGKILL)
         deadline = time.time() + 3
         while time.time() < deadline:
@@ -290,10 +321,10 @@ class WorkerJobTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(status["status"], "failed")
-        self.assertTrue(list(projects.glob("multi-ai-work-*.json")))
+        self.assertTrue(list(projects.glob("crosscrew-work-*.json")))
         _, purged = self.invoke("purge", "--older-than-days", "0", expected=0)
         self.assertTrue(purged["agy_orphan_grants_removed"])
-        self.assertEqual(list(projects.glob("multi-ai-work-*")), [])
+        self.assertEqual(list(projects.glob("crosscrew-work-*")), [])
 
     def test_collect_while_running_returns_conflict(self):
         self.fake_claude("sleep 30")
@@ -649,7 +680,7 @@ class WorkerJobTests(unittest.TestCase):
             expected=77,
         )
         self.assertEqual(payload["status"], "needs_host_escalation")
-        self.assertFalse(any((self.state / "jobs").iterdir()))
+        self.assertFalse(any((self.state / "jobs").glob("*")))
 
     def test_codex_host_claude_fresh_escalation_is_reported_before_spawn(self):
         completed, payload = self.invoke(
@@ -665,7 +696,7 @@ class WorkerJobTests(unittest.TestCase):
             expected=77,
         )
         self.assertEqual(payload["status"], "needs_host_escalation")
-        self.assertFalse(any((self.state / "jobs").iterdir()))
+        self.assertFalse(any((self.state / "jobs").glob("*")))
 
 
 if __name__ == "__main__":
